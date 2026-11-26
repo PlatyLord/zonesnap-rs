@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
-    MOD_SHIFT, MOD_WIN, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_LWIN, VK_MENU, VK_RETURN,
-    VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
+    MOD_SHIFT, MOD_WIN, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_LWIN, VK_MBUTTON, VK_MENU,
+    VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP, VK_XBUTTON1, VK_XBUTTON2,
 };
 
 pub const HOTKEY_ACTIVATE_OVERLAY: i32 = 1;
@@ -69,8 +69,16 @@ pub fn modifier_to_vk(s: &str) -> i32 {
         "ctrl" | "control" => VK_CONTROL.0 as i32,
         "shift" => VK_SHIFT.0 as i32,
         "win" | "windows" | "super" => VK_LWIN.0 as i32,
+        "mouse back" | "mouse4" | "xbutton1" | "back" => VK_XBUTTON1.0 as i32,
+        "mouse forward" | "mouse5" | "xbutton2" | "forward" => VK_XBUTTON2.0 as i32,
+        "middle click" | "middle" | "mbutton" | "mouse3" => VK_MBUTTON.0 as i32,
         _ => VK_MENU.0 as i32,
     }
+}
+
+/// Returns true if `vk` represents a mouse button modifier (`VK_MBUTTON`, `VK_XBUTTON1`, `VK_XBUTTON2`).
+pub fn is_mouse_vk(vk: i32) -> bool {
+    vk == VK_MBUTTON.0 as i32 || vk == VK_XBUTTON1.0 as i32 || vk == VK_XBUTTON2.0 as i32
 }
 
 /// Convert an optional modifier string (`"Shift"`, `"Disabled"`, etc.) to a Win32 VK (`0` if disabled).
@@ -142,6 +150,20 @@ mod tests {
         assert_eq!(modifier_to_vk("Ctrl"), VK_CONTROL.0 as i32);
         assert_eq!(modifier_to_vk("Shift"), VK_SHIFT.0 as i32);
         assert_eq!(modifier_to_vk("Win"), VK_LWIN.0 as i32);
+        assert_eq!(modifier_to_vk("Mouse Back"), VK_XBUTTON1.0 as i32);
+        assert_eq!(modifier_to_vk("XButton1"), VK_XBUTTON1.0 as i32);
+        assert_eq!(modifier_to_vk("Mouse Forward"), VK_XBUTTON2.0 as i32);
+        assert_eq!(modifier_to_vk("XButton2"), VK_XBUTTON2.0 as i32);
+        assert_eq!(modifier_to_vk("Middle Click"), VK_MBUTTON.0 as i32);
+        assert_eq!(modifier_to_vk("Middle"), VK_MBUTTON.0 as i32);
+        assert!(is_mouse_vk(VK_XBUTTON1.0 as i32));
+        assert!(is_mouse_vk(VK_XBUTTON2.0 as i32));
+        assert!(is_mouse_vk(VK_MBUTTON.0 as i32));
+        assert!(!is_mouse_vk(VK_MENU.0 as i32));
+        assert!(!is_mouse_vk(VK_CONTROL.0 as i32));
+        assert!(!is_mouse_vk(VK_SHIFT.0 as i32));
+        assert!(!is_mouse_vk(VK_LWIN.0 as i32));
+        assert!(!is_mouse_vk(0));
         assert_eq!(optional_modifier_to_vk("Disabled"), 0);
         assert_eq!(optional_modifier_to_vk("Shift"), VK_SHIFT.0 as i32);
 

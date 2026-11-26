@@ -1,3 +1,4 @@
+use crate::hotkeys::is_mouse_vk;
 use crate::window_ops::{get_root_window_at, is_excluded_app, isize_to_hwnd};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicIsize, AtomicU8, Ordering};
@@ -7,15 +8,16 @@ use std::thread::{self, JoinHandle};
 use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU,
-    VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
+    GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
+    VK_MBUTTON, VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_XBUTTON1,
+    VK_XBUTTON2,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, PostMessageW, PostThreadMessageW,
     SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG,
     MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
 pub const WM_ZONESNAP_EVENT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
@@ -61,6 +63,7 @@ pub enum HookEvent {
     WheelCycle { delta: i16 },
     LeftUp { x: i32, y: i32 },
     RightUp { x: i32, y: i32 },
+    ReplayMouseClick { vk: i32 },
     CtrlChanged(bool),
     ShiftChanged(bool),
 }
@@ -74,6 +77,9 @@ pub struct HookSharedState {
     pub overlay_hwnd: AtomicIsize,
     pending_suppress_lbutton_up: AtomicBool,
     pending_suppress_rbutton_up: AtomicBool,
+    mouse_mod_down: AtomicBool,
+    mouse_mod_used: AtomicBool,
+    mouse_mod_pressed_vk: AtomicI32,
     latest_move_packed: AtomicI64,
     move_dirty: AtomicBool,
     last_ctrl_down: AtomicBool,
@@ -92,6 +98,9 @@ impl HookSharedState {
             overlay_hwnd: AtomicIsize::new(0),
             pending_suppress_lbutton_up: AtomicBool::new(false),
             pending_suppress_rbutton_up: AtomicBool::new(false),
+            mouse_mod_down: AtomicBool::new(false),
+            mouse_mod_used: AtomicBool::new(false),
+            mouse_mod_pressed_vk: AtomicI32::new(0),
             latest_move_packed: AtomicI64::new(0),
             move_dirty: AtomicBool::new(false),
             last_ctrl_down: AtomicBool::new(false),
@@ -152,6 +161,33 @@ fn is_vk_down(vk: i32) -> bool {
 
 fn is_shift_down() -> bool {
     is_vk_down(VK_SHIFT.0 as i32)
+}
+
+fn mouse_msg_to_vk_and_down(msg: u32, mouse_data: u32) -> Option<(i32, bool)> {
+    match msg {
+        WM_MBUTTONDOWN => Some((VK_MBUTTON.0 as i32, true)),
+        WM_MBUTTONUP => Some((VK_MBUTTON.0 as i32, false)),
+        WM_XBUTTONDOWN => match (mouse_data >> 16) as u16 {
+            1 => Some((VK_XBUTTON1.0 as i32, true)),
+            2 => Some((VK_XBUTTON2.0 as i32, true)),
+            _ => None,
+        },
+        WM_XBUTTONUP => match (mouse_data >> 16) as u16 {
+            1 => Some((VK_XBUTTON1.0 as i32, false)),
+            2 => Some((VK_XBUTTON2.0 as i32, false)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn is_move_mod_active(state: &HookSharedState, move_vk: i32) -> bool {
+    if is_mouse_vk(move_vk) {
+        state.mouse_mod_down.load(Ordering::Acquire)
+            && state.mouse_mod_pressed_vk.load(Ordering::Acquire) == move_vk
+    } else {
+        is_vk_down(move_vk)
+    }
 }
 
 fn is_point_excluded(state: &HookSharedState, x: i32, y: i32) -> bool {
@@ -233,7 +269,10 @@ unsafe extern "system" fn mouse_hook_proc(ncode: i32, wparam: WPARAM, lparam: LP
             if mode == HookMode::Idle {
                 if !is_point_excluded(&ctx.state, x, y) {
                     let move_vk = ctx.state.move_mod_vk.load(Ordering::Acquire);
-                    if is_vk_down(move_vk) {
+                    if is_move_mod_active(&ctx.state, move_vk) {
+                        if is_mouse_vk(move_vk) {
+                            ctx.state.mouse_mod_used.store(true, Ordering::Release);
+                        }
                         ctx.state
                             .pending_suppress_lbutton_up
                             .store(true, Ordering::Release);
@@ -279,7 +318,10 @@ unsafe extern "system" fn mouse_hook_proc(ncode: i32, wparam: WPARAM, lparam: LP
                 HookMode::Idle => {
                     if !is_point_excluded(&ctx.state, x, y) {
                         let move_vk = ctx.state.move_mod_vk.load(Ordering::Acquire);
-                        if is_vk_down(move_vk) {
+                        if is_move_mod_active(&ctx.state, move_vk) {
+                            if is_mouse_vk(move_vk) {
+                                ctx.state.mouse_mod_used.store(true, Ordering::Release);
+                            }
                             let corner_vk = ctx.state.corner_mod_vk.load(Ordering::Acquire);
                             let corner_mode = corner_vk != 0 && is_vk_down(corner_vk);
                             ctx.state
@@ -304,6 +346,35 @@ unsafe extern "system" fn mouse_hook_proc(ncode: i32, wparam: WPARAM, lparam: LP
             }
             if suppress {
                 return LRESULT(1);
+            }
+        }
+        WM_MBUTTONDOWN | WM_MBUTTONUP | WM_XBUTTONDOWN | WM_XBUTTONUP => {
+            if let Some((btn_vk, is_down)) = mouse_msg_to_vk_and_down(msg, info.mouseData) {
+                if is_down {
+                    if btn_vk == ctx.state.move_mod_vk.load(Ordering::Acquire)
+                        && mode == HookMode::Idle
+                        && ctx.state.mouse_mod_pressed_vk.load(Ordering::Acquire) == 0
+                        && !is_point_excluded(&ctx.state, x, y)
+                    {
+                        ctx.state
+                            .mouse_mod_pressed_vk
+                            .store(btn_vk, Ordering::Release);
+                        ctx.state.mouse_mod_used.store(false, Ordering::Release);
+                        ctx.state.mouse_mod_down.store(true, Ordering::Release);
+                        return LRESULT(1);
+                    }
+                } else {
+                    let pressed_vk = ctx.state.mouse_mod_pressed_vk.load(Ordering::Acquire);
+                    if pressed_vk != 0 && btn_vk == pressed_vk {
+                        ctx.state.mouse_mod_down.store(false, Ordering::Release);
+                        ctx.state.mouse_mod_pressed_vk.store(0, Ordering::Release);
+                        let used = ctx.state.mouse_mod_used.swap(false, Ordering::AcqRel);
+                        if !used {
+                            send_event(ctx, HookEvent::ReplayMouseClick { vk: btn_vk });
+                        }
+                        return LRESULT(1);
+                    }
+                }
             }
         }
         WM_MOUSEWHEEL => {
@@ -456,5 +527,40 @@ impl Drop for HookThread {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mouse_msg_maps_middle_and_xbuttons_correctly() {
+        assert_eq!(
+            mouse_msg_to_vk_and_down(WM_MBUTTONDOWN, 0),
+            Some((VK_MBUTTON.0 as i32, true))
+        );
+        assert_eq!(
+            mouse_msg_to_vk_and_down(WM_MBUTTONUP, 0),
+            Some((VK_MBUTTON.0 as i32, false))
+        );
+        assert_eq!(
+            mouse_msg_to_vk_and_down(WM_XBUTTONDOWN, 1 << 16),
+            Some((VK_XBUTTON1.0 as i32, true))
+        );
+        assert_eq!(
+            mouse_msg_to_vk_and_down(WM_XBUTTONUP, 1 << 16),
+            Some((VK_XBUTTON1.0 as i32, false))
+        );
+        assert_eq!(
+            mouse_msg_to_vk_and_down(WM_XBUTTONDOWN, 2 << 16),
+            Some((VK_XBUTTON2.0 as i32, true))
+        );
+        assert_eq!(
+            mouse_msg_to_vk_and_down(WM_XBUTTONUP, 2 << 16),
+            Some((VK_XBUTTON2.0 as i32, false))
+        );
+        assert_eq!(mouse_msg_to_vk_and_down(WM_XBUTTONDOWN, 3 << 16), None);
+        assert_eq!(mouse_msg_to_vk_and_down(WM_LBUTTONDOWN, 0), None);
     }
 }

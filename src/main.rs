@@ -13,7 +13,7 @@ mod window_ops;
 use crate::config::{config_modified_time, Config, LayoutMode};
 use crate::hook::{HookEvent, HookMode, HookSharedState, HookThread, WM_ZONESNAP_EVENT};
 use crate::hotkeys::{
-    modifier_to_vk, optional_modifier_to_vk, HotkeyManager, HOTKEY_ACTIVATE_OVERLAY,
+    is_mouse_vk, modifier_to_vk, optional_modifier_to_vk, HotkeyManager, HOTKEY_ACTIVATE_OVERLAY,
     HOTKEY_OPEN_SETTINGS,
 };
 use crate::monitor::{enumerate_monitors, monitor_from_point, MonitorInfo, Rect};
@@ -28,9 +28,9 @@ use crate::window_ops::{
     cancel_modal_move, clip_cursor_to_monitor, compute_resized_rect, detect_nearest_corner,
     detect_resize_edges, get_root_window_at, get_window_rect, hwnd_to_isize, is_excluded_app,
     is_manageable_window, is_maximizable_window, is_resizable_window, is_titlebar_hit,
-    is_valid_window, isize_to_hwnd, maximize_window_on_monitor, move_window_nosize, resize_window,
-    restore_if_maximized, restore_unsnapped_window, send_menu_mask_key, snap_window_flush,
-    unclip_cursor, ResizeEdges,
+    is_valid_window, isize_to_hwnd, maximize_window_on_monitor, move_window_nosize,
+    replay_mouse_button_click, resize_window, restore_if_maximized, restore_unsnapped_window,
+    send_menu_mask_key, snap_window_flush, unclip_cursor, ResizeEdges,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -719,7 +719,9 @@ impl DaemonState {
                     self.end_drag();
                     return;
                 }
-                send_menu_mask_key();
+                if !is_mouse_vk(self.shared.move_mod_vk.load(Ordering::Acquire)) {
+                    send_menu_mask_key();
+                }
                 let was_max = restore_if_maximized(hwnd);
                 let Some(mut rect) = get_window_rect(hwnd) else {
                     self.end_drag();
@@ -760,7 +762,9 @@ impl DaemonState {
                     self.end_drag();
                     return;
                 }
-                send_menu_mask_key();
+                if !is_mouse_vk(self.shared.move_mod_vk.load(Ordering::Acquire)) {
+                    send_menu_mask_key();
+                }
                 restore_if_maximized(hwnd);
                 let Some(orig_rect) = get_window_rect(hwnd) else {
                     self.end_drag();
@@ -884,6 +888,9 @@ impl DaemonState {
                 if matches!(self.drag, DragSession::AltResize { .. }) {
                     self.end_drag();
                 }
+            }
+            HookEvent::ReplayMouseClick { vk } => {
+                replay_mouse_button_click(vk);
             }
         }
     }

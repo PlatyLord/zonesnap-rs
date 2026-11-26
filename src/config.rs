@@ -526,7 +526,7 @@ mod tests {
             modifiers: vec!["Ctrl".to_string(), "Alt".to_string()],
             key: "Q".to_string(),
         };
-        cfg.hotkeys.move_resize_modifier = "Ctrl".to_string();
+        cfg.hotkeys.move_resize_modifier = "Mouse Back".to_string();
         cfg.hotkeys.monitor_lock_modifier = "Shift".to_string();
         cfg.hotkeys.corner_resize_modifier = "Win".to_string();
 

@@ -8,8 +8,10 @@ use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
-    VIRTUAL_KEY,
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+    KEYEVENTF_KEYUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_XDOWN,
+    MOUSEEVENTF_XUP, MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY, VK_MBUTTON, VK_XBUTTON1,
+    VK_XBUTTON2,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     ClipCursor, GetAncestor, GetClassNameW, GetWindowLongW, GetWindowRect,
@@ -564,6 +566,37 @@ pub fn send_menu_mask_key() {
         make_input(KEYBD_EVENT_FLAGS(0)),
         make_input(KEYEVENTF_KEYUP),
     ];
+    unsafe {
+        let _ = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+/// Replay a normal click (down + up) for a suppressed mouse modifier button when tapped without dragging.
+pub fn replay_mouse_button_click(vk: i32) {
+    let (down_flag, up_flag, mouse_data) = if vk == VK_MBUTTON.0 as i32 {
+        (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, 0u32)
+    } else if vk == VK_XBUTTON1.0 as i32 {
+        (MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, 0x0001u32)
+    } else if vk == VK_XBUTTON2.0 as i32 {
+        (MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, 0x0002u32)
+    } else {
+        return;
+    };
+
+    let make_input = |flags: MOUSE_EVENT_FLAGS| INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx: 0,
+                dy: 0,
+                mouseData: mouse_data,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let inputs = [make_input(down_flag), make_input(up_flag)];
     unsafe {
         let _ = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
     }

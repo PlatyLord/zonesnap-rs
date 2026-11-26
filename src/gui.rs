@@ -1,5 +1,5 @@
 use crate::config::{config_path, Config, CustomZone, GuiTheme, Layout, LayoutMode};
-use crate::hotkeys::HotkeySpec;
+use crate::hotkeys::{is_mouse_vk, modifier_to_vk, HotkeySpec};
 use crate::monitor::{enumerate_monitors, MonitorInfo};
 use eframe::egui::{self, Color32, Pos2, Rect as EguiRect, Sense, Stroke, Vec2};
 use windows::core::{w, PCWSTR};
@@ -1436,7 +1436,15 @@ impl SettingsApp {
                         egui::ComboBox::from_id_salt("mod_move_resize")
                             .selected_text(&self.config.hotkeys.move_resize_modifier)
                             .show_ui(ui, |ui| {
-                                for m in ["Alt", "Ctrl", "Shift", "Win"] {
+                                for m in [
+                                    "Alt",
+                                    "Ctrl",
+                                    "Shift",
+                                    "Win",
+                                    "Mouse Back",
+                                    "Mouse Forward",
+                                    "Middle Click",
+                                ] {
                                     ui.selectable_value(
                                         &mut self.config.hotkeys.move_resize_modifier,
                                         m.to_string(),
@@ -1450,6 +1458,13 @@ impl SettingsApp {
                                 .weak(),
                         );
                     });
+                    if is_mouse_vk(modifier_to_vk(&self.config.hotkeys.move_resize_modifier)) {
+                        ui.label(
+                            egui::RichText::new("Quick taps of this mouse button fire normally on release; hold + Left-Drag to move or Right-Drag to resize.")
+                                .small()
+                                .weak(),
+                        );
+                    }
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.label("Monitor-Lock Modifier:");
