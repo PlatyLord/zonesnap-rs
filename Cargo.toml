@@ -3,6 +3,9 @@ name = "zonesnap"
 version = "0.1.4"
 edition = "2021"
 description = "Lightweight, portable Windows window-snapping and window-management utility"
+license = "GPL-3.0-only"
+repository = "https://github.com/PlatyLord/zonesnap-rs"
+readme = "README.md"
 
 [build-dependencies]
 winresource = "0.1"

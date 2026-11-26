@@ -4,6 +4,8 @@
 
 Drop `zonesnap.exe` into any folder (even a USB drive) and run it—no installer, no external DLLs, no `%APPDATA%` clutter, and no Windows Registry entries.
 
+> **Status & License:** Released as-is under the [GNU General Public License v3.0 (GPL-3.0)](LICENSE). This project is not actively maintained—forks and community improvements are welcome, provided derivative works remain open source under GPL-3.0.
+
 ---
 
 ## Why ZoneSnap?
@@ -222,4 +224,4 @@ Pushing a version tag (e.g. `v0.1.0`) triggers [`.github/workflows/release.yml`]
 
 - **Author:** Tom (`PlatyLord`)
 - **Co-Built With:** Antigravity (Google DeepMind)
-- **License:** None (Unlicensed) — no formal open-source license is attached to this project.
+- **License:** [GNU General Public License v3.0 (GPL-3.0)](LICENSE) — free to use, modify, and fork; derivative works must remain open source under GPL-3.0. Provided as-is with no warranty or active maintenance.

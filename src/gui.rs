@@ -1315,10 +1315,10 @@ impl SettingsApp {
         ui.group(|ui| {
             ui.label(egui::RichText::new("License").strong());
             ui.add_space(4.0);
-            ui.label("License: None (Unlicensed)");
+            ui.label("GNU General Public License v3.0 (GPL-3.0)");
             ui.label(
                 egui::RichText::new(
-                    "No formal open-source license is attached to this project.",
+                    "Free to use, modify, and fork; derivative works must also be released under GPL-3.0. Provided as-is with no warranty.",
                 )
                 .small()
                 .weak(),
