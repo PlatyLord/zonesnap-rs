@@ -1,5 +1,6 @@
+use crate::icon::app_icon_bgra_u32;
 use std::ffi::c_void;
-use windows::core::w;
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateBitmap, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, BITMAPINFO,
@@ -10,40 +11,29 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos,
-    PostMessageW, SetForegroundWindow, TrackPopupMenu, HICON, ICONINFO, MF_SEPARATOR, MF_STRING,
-    TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP, WM_NULL,
+    PostMessageW, SetForegroundWindow, TrackPopupMenu, HICON, HMENU, ICONINFO, MF_CHECKED,
+    MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+    TPM_RIGHTBUTTON, WM_APP, WM_NULL,
 };
 
 pub const WM_TRAYICON: u32 = WM_APP + 20;
 pub const IDM_SETTINGS: usize = 1001;
 pub const IDM_RELOAD: usize = 1002;
 pub const IDM_EXIT: usize = 1003;
+pub const IDM_LAYOUT_BASE: usize = 2000;
+
+pub struct TrayMonitorLayouts {
+    pub monitor_label: String,
+    pub items: Vec<(usize, String, bool)>,
+}
+
+fn to_wide_null(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
 
 fn create_tray_hicon() -> Option<HICON> {
     const SIZE: i32 = 32;
-    let mut pixels = vec![0u32; (SIZE * SIZE) as usize];
-
-    let set_rect = |buf: &mut [u32], x0: i32, y0: i32, w: i32, h: i32, argb: u32| {
-        for y in y0.max(0)..(y0 + h).min(SIZE) {
-            for x in x0.max(0)..(x0 + w).min(SIZE) {
-                buf[(y * SIZE + x) as usize] = argb;
-            }
-        }
-    };
-
-    // Dark slate background tile with rounded corners
-    set_rect(&mut pixels, 2, 2, 28, 28, 0xFF0F_172A);
-    // Clear 4 outer corner pixels for rounded look
-    for &(cx, cy) in &[(2, 2), (29, 2), (2, 29), (29, 29)] {
-        pixels[(cy * SIZE + cx) as usize] = 0x0000_0000;
-    }
-    // Crisp slate border highlights
-    set_rect(&mut pixels, 3, 2, 26, 1, 0xFF33_4155);
-    set_rect(&mut pixels, 3, 29, 26, 1, 0xFF33_4155);
-    // 3 snapped zone tiles (left focus pane + 2 right stacked panes)
-    set_rect(&mut pixels, 5, 6, 11, 20, 0xFF38_BDF8);
-    set_rect(&mut pixels, 18, 6, 9, 9, 0xFF02_84C7);
-    set_rect(&mut pixels, 18, 17, 9, 9, 0xFF7D_D3FC);
+    let pixels = app_icon_bgra_u32(SIZE as u32);
 
     unsafe {
         let hdc = CreateCompatibleDC(HDC::default());
@@ -122,11 +112,55 @@ impl TrayIcon {
         }
     }
 
-    pub fn show_context_menu(hwnd: HWND) {
+    unsafe fn populate_monitor_submenu(sub: HMENU, items: &[(usize, String, bool)]) {
+        for (cmd_id, name, active) in items {
+            let wname = to_wide_null(name);
+            let flags = MF_STRING | if *active { MF_CHECKED } else { MF_UNCHECKED };
+            let _ = AppendMenuW(sub, flags, *cmd_id, PCWSTR(wname.as_ptr()));
+        }
+    }
+
+    pub fn show_context_menu(hwnd: HWND, monitor_menus: &[TrayMonitorLayouts]) {
         unsafe {
             let Ok(menu) = CreatePopupMenu() else {
                 return;
             };
+
+            if monitor_menus.len() == 1 {
+                if let Ok(sub) = CreatePopupMenu() {
+                    Self::populate_monitor_submenu(sub, &monitor_menus[0].items);
+                    let _ = AppendMenuW(
+                        menu,
+                        MF_POPUP,
+                        sub.0 as usize,
+                        w!("Switch Layout"),
+                    );
+                    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+                }
+            } else if monitor_menus.len() > 1 {
+                if let Ok(layouts_root) = CreatePopupMenu() {
+                    for mon in monitor_menus {
+                        if let Ok(mon_sub) = CreatePopupMenu() {
+                            Self::populate_monitor_submenu(mon_sub, &mon.items);
+                            let wlabel = to_wide_null(&mon.monitor_label);
+                            let _ = AppendMenuW(
+                                layouts_root,
+                                MF_POPUP,
+                                mon_sub.0 as usize,
+                                PCWSTR(wlabel.as_ptr()),
+                            );
+                        }
+                    }
+                    let _ = AppendMenuW(
+                        menu,
+                        MF_POPUP,
+                        layouts_root.0 as usize,
+                        w!("Switch Layout"),
+                    );
+                    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+                }
+            }
+
             let _ = AppendMenuW(
                 menu,
                 MF_STRING,
@@ -134,7 +168,7 @@ impl TrayIcon {
                 w!("Configure Zones & Settings"),
             );
             let _ = AppendMenuW(menu, MF_STRING, IDM_RELOAD, w!("Reload zones.json"));
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             let _ = AppendMenuW(menu, MF_STRING, IDM_EXIT, w!("Exit"));
 
             let mut pt = POINT::default();

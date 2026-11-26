@@ -268,6 +268,14 @@ impl SettingsApp {
             }
         });
 
+        let other_monitors: Vec<(String, String)> = self
+            .config
+            .monitors
+            .iter()
+            .filter(|(k, _)| *k != &self.selected_monitor_key)
+            .map(|(k, p)| (k.clone(), format!("{} ({}x{})", p.device_name, p.width, p.height)))
+            .collect();
+
         let Some(prof) = self.config.monitors.get_mut(&self.selected_monitor_key) else {
             return;
         };
@@ -286,9 +294,12 @@ impl SettingsApp {
         let can_delete = prof.layouts.len() > 1;
 
         let mut delete_layout = false;
-        ui.horizontal(|ui| {
+        let mut duplicate_layout = false;
+        let mut copy_to_monitor: Option<String> = None;
+
+        ui.horizontal_wrapped(|ui| {
             ui.label("Name:");
-            ui.add(egui::TextEdit::singleline(&mut prof.layouts[sel_idx].name).desired_width(200.0));
+            ui.add(egui::TextEdit::singleline(&mut prof.layouts[sel_idx].name).desired_width(180.0));
 
             let is_grid = matches!(prof.layouts[sel_idx].mode, LayoutMode::DynamicGrid { .. });
             if ui.radio(is_grid, "Dynamic Grid").clicked() && !is_grid {
@@ -302,6 +313,20 @@ impl SettingsApp {
             }
 
             ui.colored_label(Color32::from_rgb(56, 189, 248), "★ Active");
+            if ui.button("Duplicate").clicked() {
+                duplicate_layout = true;
+            }
+            if !other_monitors.is_empty() {
+                egui::ComboBox::from_id_salt("copy_to_monitor")
+                    .selected_text("Copy to Monitor...")
+                    .show_ui(ui, |ui| {
+                        for (dest_key, dest_label) in &other_monitors {
+                            if ui.selectable_label(false, dest_label).clicked() {
+                                copy_to_monitor = Some(dest_key.clone());
+                            }
+                        }
+                    });
+            }
             if ui
                 .add_enabled(can_delete, egui::Button::new("Delete Layout"))
                 .clicked()
@@ -309,6 +334,37 @@ impl SettingsApp {
                 delete_layout = true;
             }
         });
+
+        if duplicate_layout {
+            let mut dup = prof.layouts[sel_idx].clone();
+            dup.name = format!("{} (Copy)", dup.name);
+            prof.layouts.push(dup);
+            let new_idx = prof.layouts.len() - 1;
+            prof.active_layout_index = new_idx;
+            self.selected_layout_idx = new_idx;
+            self.selected_zone_idx = Some(0);
+            return;
+        }
+
+        if let Some(dest_key) = copy_to_monitor {
+            let cloned_layout = prof.layouts[sel_idx].clone();
+            if let Some(dest_prof) = self.config.monitors.get_mut(&dest_key) {
+                let mut new_name = cloned_layout.name.clone();
+                while dest_prof.layouts.iter().any(|l| l.name == new_name) {
+                    new_name.push_str(" (Copy)");
+                }
+                let dest_label = format!("{} ({}x{})", dest_prof.device_name, dest_prof.width, dest_prof.height);
+                dest_prof.layouts.push(Layout {
+                    name: new_name.clone(),
+                    mode: cloned_layout.mode,
+                });
+                self.status_is_error = false;
+                self.status_msg = Some(format!(
+                    "Copied '{new_name}' to {dest_label}. Click Save & Apply to apply."
+                ));
+            }
+            return;
+        }
 
         if delete_layout && prof.layouts.len() > 1 {
             prof.layouts.remove(sel_idx);
@@ -1072,7 +1128,12 @@ pub fn run_settings_window(reload_msg: u32) {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([920.0, 660.0])
-            .with_min_inner_size([720.0, 520.0]),
+            .with_min_inner_size([720.0, 520.0])
+            .with_icon(std::sync::Arc::new(egui::IconData {
+                rgba: crate::icon::app_icon_rgba(64),
+                width: 64,
+                height: 64,
+            })),
         ..Default::default()
     };
 

@@ -4,6 +4,7 @@ mod config;
 mod gui;
 mod hook;
 mod hotkeys;
+mod icon;
 mod monitor;
 mod overlay;
 mod tray;
@@ -19,13 +20,15 @@ use crate::overlay::{
     custom_zone_pixel_rect, grid_cell_at, grid_span_rect, hit_test_custom_zones, union_rects,
     OverlayRenderState, OverlayWindow,
 };
-use crate::tray::{TrayIcon, IDM_EXIT, IDM_RELOAD, IDM_SETTINGS, WM_TRAYICON};
+use crate::tray::{
+    TrayIcon, TrayMonitorLayouts, IDM_EXIT, IDM_LAYOUT_BASE, IDM_RELOAD, IDM_SETTINGS, WM_TRAYICON,
+};
 use crate::window_ops::{
     cancel_modal_move, clip_cursor_to_monitor, compute_resized_rect, detect_resize_edges,
     get_root_window_at, get_window_rect, hwnd_to_isize, is_excluded_app, is_manageable_window,
-    is_resizable_window, is_titlebar_hit, isize_to_hwnd, move_window_nosize, resize_window,
-    restore_if_maximized, restore_unsnapped_window, send_menu_mask_key, snap_window_flush,
-    unclip_cursor, ResizeEdges,
+    is_resizable_window, is_titlebar_hit, is_valid_window, isize_to_hwnd, move_window_nosize,
+    resize_window, restore_if_maximized, restore_unsnapped_window, send_menu_mask_key,
+    snap_window_flush, unclip_cursor, ResizeEdges,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -124,8 +127,10 @@ struct DaemonState {
     reload_msg: u32,
     tray: Option<TrayIcon>,
     taskbar_created_msg: u32,
+    tray_layout_map: Vec<(String, usize)>,
     snapped_cache: HashMap<isize, Rect>,
     pending_reverify_snap: Option<(isize, Rect)>,
+    watch_ticks: u32,
     hotkeys: HotkeyManager,
     drag: DragSession,
     overlay_session: Option<OverlaySession>,
@@ -155,12 +160,71 @@ impl DaemonState {
             reload_msg,
             tray,
             taskbar_created_msg,
+            tray_layout_map: Vec::new(),
             snapped_cache: HashMap::new(),
             pending_reverify_snap: None,
+            watch_ticks: 0,
             hotkeys,
             drag: DragSession::None,
             overlay_session: None,
             cursor_locked: false,
+        }
+    }
+
+    fn prune_snapped_cache(&mut self) {
+        self.snapped_cache
+            .retain(|&raw, _| is_valid_window(isize_to_hwnd(raw)));
+    }
+
+    fn show_tray_menu(&mut self) {
+        self.check_and_reload_if_changed();
+        let monitors = enumerate_monitors();
+        self.config.ensure_monitors(&monitors);
+
+        self.tray_layout_map.clear();
+        let mut menus = Vec::with_capacity(monitors.len());
+        for m in &monitors {
+            let key = m.profile_key();
+            if let Some(prof) = self.config.monitors.get(&key) {
+                let pri = if m.is_primary { " [Primary]" } else { "" };
+                let monitor_label = format!(
+                    "{} ({}x{}){}",
+                    m.device_name,
+                    m.rc_monitor.width(),
+                    m.rc_monitor.height(),
+                    pri
+                );
+                let active_idx = prof
+                    .active_layout_index
+                    .min(prof.layouts.len().saturating_sub(1));
+                let mut items = Vec::with_capacity(prof.layouts.len());
+                for (idx, layout) in prof.layouts.iter().enumerate() {
+                    let cmd_id = IDM_LAYOUT_BASE + self.tray_layout_map.len();
+                    self.tray_layout_map.push((key.clone(), idx));
+                    items.push((cmd_id, layout.name.clone(), idx == active_idx));
+                }
+                menus.push(TrayMonitorLayouts {
+                    monitor_label,
+                    items,
+                });
+            }
+        }
+        TrayIcon::show_context_menu(self.daemon_hwnd, &menus);
+    }
+
+    fn select_tray_layout(&mut self, cmd_id: usize) {
+        let Some(offset) = cmd_id.checked_sub(IDM_LAYOUT_BASE) else {
+            return;
+        };
+        let Some((key, layout_idx)) = self.tray_layout_map.get(offset).cloned() else {
+            return;
+        };
+        if let Some(prof) = self.config.monitors.get_mut(&key) {
+            if layout_idx < prof.layouts.len() {
+                prof.active_layout_index = layout_idx;
+                let _ = self.config.save();
+                self.last_config_mtime = config_modified_time();
+            }
         }
     }
 
@@ -456,6 +520,9 @@ impl DaemonState {
         }
 
         if let Some(target) = sess.target_rect {
+            if self.snapped_cache.len() > 64 {
+                self.prune_snapped_cache();
+            }
             let hwnd = isize_to_hwnd(sess.target_hwnd);
             let overlay_hwnd = self.shared.overlay_hwnd.load(Ordering::Acquire);
             let was_standard = matches!(sess.return_drag, DragSession::Standard { .. });
@@ -897,7 +964,11 @@ unsafe extern "system" fn daemon_wnd_proc(
         WM_TRAYICON => {
             let ev = (lparam.0 as u32) & 0xFFFF;
             if ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU {
-                TrayIcon::show_context_menu(hwnd);
+                DAEMON_STATE.with(|cell| {
+                    if let Some(state) = cell.borrow_mut().as_mut() {
+                        state.show_tray_menu();
+                    }
+                });
             } else if ev == WM_LBUTTONDBLCLK {
                 DAEMON_STATE.with(|cell| {
                     if let Some(state) = cell.borrow().as_ref() {
@@ -909,6 +980,14 @@ unsafe extern "system" fn daemon_wnd_proc(
         }
         WM_COMMAND => {
             let cmd = (wparam.0 & 0xFFFF) as usize;
+            if cmd >= IDM_LAYOUT_BASE {
+                DAEMON_STATE.with(|cell| {
+                    if let Some(state) = cell.borrow_mut().as_mut() {
+                        state.select_tray_layout(cmd);
+                    }
+                });
+                return LRESULT(0);
+            }
             match cmd {
                 IDM_SETTINGS => {
                     DAEMON_STATE.with(|cell| {
@@ -944,6 +1023,10 @@ unsafe extern "system" fn daemon_wnd_proc(
                         state.reverify_pending_snap();
                     } else if timer_id == TIMER_CONFIG_WATCH {
                         state.check_and_reload_if_changed();
+                        state.watch_ticks = state.watch_ticks.wrapping_add(1);
+                        if state.watch_ticks % 60 == 0 {
+                            state.prune_snapped_cache();
+                        }
                     }
                 }
             });

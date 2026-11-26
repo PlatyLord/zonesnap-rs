@@ -13,10 +13,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     ClipCursor, GetAncestor, GetClassNameW, GetWindowLongW, GetWindowRect,
-    GetWindowThreadProcessId, IsWindowVisible, IsZoomed, PostMessageW, SendMessageTimeoutW,
-    SetWindowPos, ShowWindow, WindowFromPoint, GA_ROOT, GWL_STYLE, HTCAPTION, SMTO_ABORTIFHUNG,
-    SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE, WM_CANCELMODE, WM_NCHITTEST, WS_CHILD,
-    WS_THICKFRAME,
+    GetWindowThreadProcessId, IsWindow, IsWindowVisible, IsZoomed, PostMessageW,
+    SendMessageTimeoutW, SetWindowPos, ShowWindow, WindowFromPoint, GA_ROOT, GWL_STYLE, HTCAPTION,
+    SMTO_ABORTIFHUNG, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE, WM_CANCELMODE,
+    WM_NCHITTEST, WS_CHILD, WS_THICKFRAME,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +151,11 @@ pub fn is_manageable_window(hwnd: HWND, own_overlay_hwnd: isize) -> bool {
             | "ZoneSnap_OverlayWindow"
             | "ZoneSnap_Daemon_MsgWindow"
     )
+}
+
+/// Returns true if `hwnd` still refers to an existing window handle.
+pub fn is_valid_window(hwnd: HWND) -> bool {
+    !hwnd.0.is_null() && unsafe { IsWindow(hwnd).as_bool() }
 }
 
 /// Returns true if the window has a sizing border (`WS_THICKFRAME`).
