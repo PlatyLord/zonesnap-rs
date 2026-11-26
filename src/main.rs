@@ -60,6 +60,28 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const TIMER_TOAST_HIDE: usize = 1;
 const TIMER_POST_SNAP_REVERIFY: usize = 2;
 const TIMER_CONFIG_WATCH: usize = 3;
+const TIMER_OVERLAY_IDLE_EVICT: usize = 4;
+const OVERLAY_IDLE_EVICT_MS: u32 = 10_000;
+
+fn hide_overlay_and_schedule(overlay: &mut OverlayWindow, daemon_hwnd: HWND) {
+    overlay.hide();
+    if overlay.has_allocated_buffers() {
+        unsafe {
+            let _ = SetTimer(
+                daemon_hwnd,
+                TIMER_OVERLAY_IDLE_EVICT,
+                OVERLAY_IDLE_EVICT_MS,
+                None,
+            );
+        }
+    }
+}
+
+fn cancel_overlay_idle_evict(daemon_hwnd: HWND) {
+    unsafe {
+        let _ = KillTimer(daemon_hwnd, TIMER_OVERLAY_IDLE_EVICT);
+    }
+}
 
 pub fn reload_window_message() -> u32 {
     unsafe { RegisterWindowMessageW(w!("ZoneSnap_ReloadConfig")) }
@@ -270,6 +292,10 @@ impl DaemonState {
     fn handle_display_change(&mut self) {
         let monitors = enumerate_monitors();
         self.config.ensure_monitors(&monitors);
+        if self.overlay_session.is_none() && !self.overlay.is_visible() {
+            cancel_overlay_idle_evict(self.daemon_hwnd);
+            self.overlay.release_idle_buffers();
+        }
     }
 
     fn update_cursor_lock(&mut self, locked: bool, cursor_x: i32, cursor_y: i32) {
@@ -292,7 +318,7 @@ impl DaemonState {
             unclip_cursor();
             self.cursor_locked = false;
         }
-        self.overlay.hide();
+        hide_overlay_and_schedule(&mut self.overlay, self.daemon_hwnd);
         self.overlay_session = None;
         self.drag = DragSession::None;
         self.shared.set_mode(HookMode::Idle);
@@ -471,11 +497,12 @@ impl DaemonState {
             target_rect: sess.target_rect,
             toast_text: sess.toast_text.as_deref(),
         };
+        cancel_overlay_idle_evict(self.daemon_hwnd);
         self.overlay.render(&render_state);
     }
 
     fn cancel_overlay(&mut self) {
-        self.overlay.hide();
+        hide_overlay_and_schedule(&mut self.overlay, self.daemon_hwnd);
         unsafe {
             let _ = KillTimer(self.daemon_hwnd, TIMER_TOAST_HIDE);
         }
@@ -523,7 +550,7 @@ impl DaemonState {
             self.end_drag();
             return;
         };
-        self.overlay.hide();
+        hide_overlay_and_schedule(&mut self.overlay, self.daemon_hwnd);
         unsafe {
             let _ = KillTimer(self.daemon_hwnd, TIMER_TOAST_HIDE);
         }
@@ -820,7 +847,7 @@ impl DaemonState {
                 } = self.drag
                 {
                     let mon_clone = mon.clone();
-                    self.overlay.hide();
+                    hide_overlay_and_schedule(&mut self.overlay, self.daemon_hwnd);
                     self.snapped_cache.remove(&hwnd);
                     maximize_window_on_monitor(isize_to_hwnd(hwnd), &mon_clone);
                     self.end_drag();
@@ -920,6 +947,7 @@ impl DaemonState {
                     if let Some(mon) = monitor_from_point(x, y) {
                         if y <= mon.rc_work.top + 10 {
                             *maximize_target = Some(mon.clone());
+                            cancel_overlay_idle_evict(self.daemon_hwnd);
                             self.overlay
                                 .render_maximize_preview(mon.rc_work, &self.config.appearance);
                         } else if maximize_target.is_some()
@@ -930,12 +958,12 @@ impl DaemonState {
                                     .unwrap_or(false))
                         {
                             *maximize_target = None;
-                            self.overlay.hide();
+                            hide_overlay_and_schedule(&mut self.overlay, self.daemon_hwnd);
                         }
                     }
                 } else if maximize_target.is_some() {
                     *maximize_target = None;
-                    self.overlay.hide();
+                    hide_overlay_and_schedule(&mut self.overlay, self.daemon_hwnd);
                 }
             }
             DragSession::AltResize {
@@ -1099,6 +1127,10 @@ unsafe extern "system" fn daemon_wnd_proc(
                             state.clear_toast();
                         } else if timer_id == TIMER_POST_SNAP_REVERIFY {
                             state.reverify_pending_snap();
+                        } else if timer_id == TIMER_OVERLAY_IDLE_EVICT {
+                            if state.overlay_session.is_none() && !state.overlay.is_visible() {
+                                state.overlay.release_idle_buffers();
+                            }
                         } else if timer_id == TIMER_CONFIG_WATCH {
                             state.check_and_reload_if_changed();
                             state.watch_ticks = state.watch_ticks.wrapping_add(1);

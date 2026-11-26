@@ -14,8 +14,9 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW, SetWindowPos, ShowWindow,
-    UpdateLayeredWindow, HWND_TOPMOST, SWP_NOACTIVATE, SW_HIDE, SW_SHOWNA, ULW_ALPHA, WNDCLASSW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    UpdateLayeredWindow, HWND_TOPMOST, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE,
+    SW_SHOWNA, ULW_ALPHA, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 /// Map a screen coordinate `(x, y)` inside `work` to a 0-based grid cell `(col, row)`.
@@ -371,6 +372,60 @@ impl OverlayWindow {
         }
         self.last_frame_key = None;
         self.last_maximize_key = None;
+    }
+
+    pub fn has_allocated_buffers(&self) -> bool {
+        !self.bits_ptr.is_null() || self.cached_base.capacity() > 0 || self.current_work.width() > 1
+    }
+
+    /// Release all multi-megabyte backing surfaces and shrink DWM's cached layered
+    /// redirection surface to 1x1 when the overlay has remained hidden past its idle grace period.
+    pub fn release_idle_buffers(&mut self) {
+        if self.visible {
+            return;
+        }
+
+        if !self.hwnd.0.is_null() && self.ensure_dib(1, 1) {
+            unsafe {
+                *self.bits_ptr = 0;
+                let pt_dst = POINT { x: 0, y: 0 };
+                let size = SIZE { cx: 1, cy: 1 };
+                let pt_src = POINT { x: 0, y: 0 };
+                let blend = BLENDFUNCTION {
+                    BlendOp: AC_SRC_OVER as u8,
+                    BlendFlags: 0,
+                    SourceConstantAlpha: 255,
+                    AlphaFormat: AC_SRC_ALPHA as u8,
+                };
+                let _ = UpdateLayeredWindow(
+                    self.hwnd,
+                    HDC::default(),
+                    Some(&pt_dst),
+                    Some(&size),
+                    self.mem_dc,
+                    Some(&pt_src),
+                    COLORREF(0),
+                    Some(&blend),
+                    ULW_ALPHA,
+                );
+                let _ = SetWindowPos(
+                    self.hwnd,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    1,
+                    1,
+                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_HIDEWINDOW,
+                );
+            }
+        }
+
+        self.release_dib();
+        self.cached_base = Vec::new();
+        self.cached_base_key = None;
+        self.last_frame_key = None;
+        self.last_maximize_key = None;
+        self.current_work = Rect::default();
     }
 
     pub fn render_maximize_preview(&mut self, work: Rect, style: &OverlayStyle) {
@@ -1157,5 +1212,49 @@ mod tests {
         );
         // Inside Right column -> hits Right (1)
         assert_eq!(hit_test_custom_zones(work, &zones, 650, 500, 16), vec![1]);
+    }
+
+    #[test]
+    fn idle_buffer_eviction_frees_and_rebuilds_surfaces() {
+        let mut overlay = OverlayWindow::new().expect("create overlay window");
+        let work = Rect {
+            left: 0,
+            top: 0,
+            right: 320,
+            bottom: 200,
+        };
+        let layout = Layout {
+            name: "Grid".to_string(),
+            mode: LayoutMode::DynamicGrid { cols: 4, rows: 2 },
+        };
+        let style = OverlayStyle::default();
+        let active = HashSet::new();
+        let state = OverlayRenderState {
+            work,
+            layout: &layout,
+            style: &style,
+            grid_anchor: Some((0, 0)),
+            grid_current: Some((1, 1)),
+            active_zones: &active,
+            target_rect: Some(grid_span_rect(work, 4, 2, (0, 0), (1, 1))),
+            toast_text: None,
+        };
+
+        overlay.render(&state);
+        assert!(overlay.is_visible());
+        assert!(overlay.has_allocated_buffers());
+        assert!(overlay.cached_base.capacity() > 0);
+
+        overlay.hide();
+        assert!(!overlay.is_visible());
+        overlay.release_idle_buffers();
+        assert!(!overlay.has_allocated_buffers());
+        assert_eq!(overlay.cached_base.capacity(), 0);
+        assert!(overlay.bits_ptr.is_null());
+
+        overlay.render(&state);
+        assert!(overlay.is_visible());
+        assert!(overlay.has_allocated_buffers());
+        overlay.hide();
     }
 }
