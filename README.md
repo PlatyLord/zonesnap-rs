@@ -209,3 +209,11 @@ The standalone GUI executable is written to `target\release\zonesnap.exe` (stati
 ### Automated Releases
 
 Pushing a version tag (e.g. `v0.1.0`) triggers [`.github/workflows/release.yml`](.github/workflows/release.yml), which runs `cargo test`, builds `target/release/zonesnap.exe`, generates `SHA256SUMS.txt`, and publishes a GitHub Release automatically.
+
+---
+
+## Credits & License
+
+- **Author:** Tom (`PlatyLord`)
+- **Co-Built With:** Antigravity (Google DeepMind)
+- **License:** None (Unlicensed) — no formal open-source license is attached to this project.

@@ -28,6 +28,7 @@ enum SettingsTab {
     Layouts,
     Hotkeys,
     Appearance,
+    About,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -846,9 +847,25 @@ impl SettingsApp {
         }
     }
 
-    fn render_hotkey_editor(ui: &mut egui::Ui, id_salt: &str, label: &str, spec: &mut HotkeySpec) {
+    fn format_hotkey(spec: &HotkeySpec) -> String {
+        if spec.modifiers.is_empty() {
+            spec.key.clone()
+        } else {
+            format!("{} + {}", spec.modifiers.join(" + "), spec.key)
+        }
+    }
+
+    fn render_hotkey_editor(
+        ui: &mut egui::Ui,
+        id_salt: &str,
+        label: &str,
+        description: &str,
+        spec: &mut HotkeySpec,
+    ) {
         ui.group(|ui| {
             ui.label(egui::RichText::new(label).strong());
+            ui.label(egui::RichText::new(description).small().weak());
+            ui.add_space(2.0);
             ui.horizontal(|ui| {
                 for m in ["Win", "Alt", "Ctrl", "Shift"] {
                     let mut present = spec
@@ -881,97 +898,278 @@ impl SettingsApp {
     }
 
     fn render_hotkeys_tab(&mut self, ui: &mut egui::Ui) {
-        Self::render_hotkey_editor(
-            ui,
-            "hk_activate",
-            "Activate Zone Overlay (Keyboard Trigger)",
-            &mut self.config.hotkeys.activate_overlay,
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                Self::render_hotkey_editor(
+                    ui,
+                    "hk_activate",
+                    "Activate Zone Overlay (Keyboard Trigger)",
+                    "Opens the zone overlay for the currently focused window without starting a mouse drag.",
+                    &mut self.config.hotkeys.activate_overlay,
+                );
+                ui.add_space(8.0);
+                Self::render_hotkey_editor(
+                    ui,
+                    "hk_settings",
+                    "Open Settings & Zone Editor",
+                    "Launches or brings this Settings & Visual Zone Editor window to the front.",
+                    &mut self.config.hotkeys.open_settings,
+                );
+                ui.add_space(8.0);
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Mouse Drag Modifiers").strong());
+                    ui.horizontal(|ui| {
+                        ui.label("Move / Resize Modifier:");
+                        egui::ComboBox::from_id_salt("mod_move_resize")
+                            .selected_text(&self.config.hotkeys.move_resize_modifier)
+                            .show_ui(ui, |ui| {
+                                for m in ["Alt", "Ctrl", "Shift", "Win"] {
+                                    ui.selectable_value(
+                                        &mut self.config.hotkeys.move_resize_modifier,
+                                        m.to_string(),
+                                        m,
+                                    );
+                                }
+                            });
+                        ui.label(
+                            egui::RichText::new("Left-Drag moves window; Right-Drag resizes from edge/corner")
+                                .small()
+                                .weak(),
+                        );
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Monitor-Lock Modifier:");
+                        egui::ComboBox::from_id_salt("mod_lock")
+                            .selected_text(&self.config.hotkeys.monitor_lock_modifier)
+                            .show_ui(ui, |ui| {
+                                for m in ["Ctrl", "Shift", "Alt", "Win"] {
+                                    ui.selectable_value(
+                                        &mut self.config.hotkeys.monitor_lock_modifier,
+                                        m.to_string(),
+                                        m,
+                                    );
+                                }
+                            });
+                        ui.label(
+                            egui::RichText::new("Hold while dragging to clamp cursor inside the active monitor")
+                                .small()
+                                .weak(),
+                        );
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Nearest-Corner Resize Modifier:");
+                        egui::ComboBox::from_id_salt("mod_corner_resize")
+                            .selected_text(&self.config.hotkeys.corner_resize_modifier)
+                            .show_ui(ui, |ui| {
+                                for m in ["Shift", "Ctrl", "Alt", "Win", "Disabled"] {
+                                    ui.selectable_value(
+                                        &mut self.config.hotkeys.corner_resize_modifier,
+                                        m.to_string(),
+                                        m,
+                                    );
+                                }
+                            });
+                        ui.label(
+                            egui::RichText::new("Hold with Move/Resize + Right-Drag to force 2x2 nearest-corner resize")
+                                .small()
+                                .weak(),
+                        );
+                    });
+                    if self
+                        .config
+                        .hotkeys
+                        .move_resize_modifier
+                        .eq_ignore_ascii_case(&self.config.hotkeys.monitor_lock_modifier)
+                    {
+                        ui.colored_label(
+                            Color32::from_rgb(251, 191, 36),
+                            "Warning: Move/Resize and Monitor-Lock modifiers are set to the same key.",
+                        );
+                    }
+                    if !self
+                        .config
+                        .hotkeys
+                        .corner_resize_modifier
+                        .eq_ignore_ascii_case("Disabled")
+                        && self
+                            .config
+                            .hotkeys
+                            .move_resize_modifier
+                            .eq_ignore_ascii_case(&self.config.hotkeys.corner_resize_modifier)
+                    {
+                        ui.colored_label(
+                            Color32::from_rgb(251, 191, 36),
+                            "Warning: Move/Resize and Nearest-Corner Resize modifiers are set to the same key.",
+                        );
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Complete Controls & Shortcuts Reference").strong());
+                    ui.label(
+                        egui::RichText::new("Live reference reflecting your currently selected modifiers and hotkeys:")
+                            .small()
+                            .weak(),
+                    );
+                    ui.add_space(4.0);
+
+                    let move_mod = &self.config.hotkeys.move_resize_modifier;
+                    let lock_mod = &self.config.hotkeys.monitor_lock_modifier;
+                    let corner_mod = &self.config.hotkeys.corner_resize_modifier;
+                    let activate_hk = Self::format_hotkey(&self.config.hotkeys.activate_overlay);
+                    let settings_hk = Self::format_hotkey(&self.config.hotkeys.open_settings);
+                    let corner_combo = if corner_mod.eq_ignore_ascii_case("Disabled") {
+                        "Disabled".to_string()
+                    } else {
+                        format!("{move_mod} + {corner_mod} + Right-Drag")
+                    };
+
+                    let rows: [(&str, String, &str); 14] = [
+                        (
+                            "Standard Drag + Snap",
+                            "Drag Title Bar + Right-Click".to_string(),
+                            "Suppresses context menu and opens zone overlay; release Left-Click to snap.",
+                        ),
+                        (
+                            "Move Window Anywhere",
+                            format!("{move_mod} + Left-Drag"),
+                            "Smoothly moves any window from anywhere inside it without needing the title bar.",
+                        ),
+                        (
+                            "Drag-to-Top Maximize",
+                            format!("{move_mod} + Left-Drag to Top Edge"),
+                            "Shows a Maximize preview at the top of any monitor; release Left-Click to maximize.",
+                        ),
+                        (
+                            "Hand Off Move to Zones",
+                            format!("{move_mod} + Left-Drag + Right-Click"),
+                            "Opens the zone overlay mid-drag; release Left-Click to snap into highlighted zone.",
+                        ),
+                        (
+                            "Edge / Corner Resize (3x3)",
+                            format!("{move_mod} + Right-Drag"),
+                            "Divides window into a 3x3 grid: side edges resize one side; corners/center resize two.",
+                        ),
+                        (
+                            "Nearest-Corner Resize (2x2)",
+                            corner_combo,
+                            "Splits window into 2x2 quadrants and always resizes from the nearest corner.",
+                        ),
+                        (
+                            "Monitor-Lock Cursor",
+                            format!("Hold {lock_mod} while dragging"),
+                            "Clamps cursor inside the active monitor's bounds so you can snap cleanly at shared edges.",
+                        ),
+                        (
+                            "Cycle Monitor Layouts",
+                            "Mouse Wheel (overlay open)".to_string(),
+                            "Cycles through saved layouts on the cursor's monitor and shows a layout toast pill.",
+                        ),
+                        (
+                            "Merge Custom Zones",
+                            "Hold Shift or Hover Border (±16px)".to_string(),
+                            "In Custom Zones mode, merges hovered zones or adjacent zones into their bounding box.",
+                        ),
+                        (
+                            "Cancel Overlay",
+                            "Esc or 2nd Right-Click".to_string(),
+                            "Dismisses the overlay immediately without snapping so you can drop the window freely.",
+                        ),
+                        (
+                            "Keyboard Zone Overlay",
+                            format!("{activate_hk} -> Left-Click"),
+                            "Opens overlay for the focused window; Left-Click snaps, Right-Click/Esc cancels.",
+                        ),
+                        (
+                            "Open Settings & Editor",
+                            format!("{settings_hk} or Tray Double-Click"),
+                            "Opens or focuses this visual layout editor and settings window.",
+                        ),
+                        (
+                            "Quick-Switch Layout",
+                            "Tray Right-Click -> Switch Layout".to_string(),
+                            "Switches the active layout for any connected monitor without opening Settings.",
+                        ),
+                        (
+                            "Save Settings",
+                            "Ctrl + S".to_string(),
+                            "Writes zones.json beside zonesnap.exe and hot-reloads the background daemon.",
+                        ),
+                    ];
+
+                    egui::Grid::new("shortcuts_ref_grid")
+                        .striped(true)
+                        .num_columns(3)
+                        .spacing([14.0, 6.0])
+                        .show(ui, |ui| {
+                            ui.strong("Action");
+                            ui.strong("Shortcut / Gesture");
+                            ui.strong("How It Works");
+                            ui.end_row();
+                            for (action, shortcut, desc) in rows {
+                                ui.label(egui::RichText::new(action).strong());
+                                ui.monospace(shortcut);
+                                ui.label(egui::RichText::new(desc).small());
+                                ui.end_row();
+                            }
+                        });
+                });
+            });
+    }
+
+    fn render_about_tab(&self, ui: &mut egui::Ui) {
+        ui.heading(format!("ZoneSnap v{}", env!("CARGO_PKG_VERSION")));
+        ui.label(
+            "Lightweight, single-binary portable Windows window-snapping and window-management utility.",
         );
-        ui.add_space(8.0);
-        Self::render_hotkey_editor(
-            ui,
-            "hk_settings",
-            "Open Settings & Zone Editor",
-            &mut self.config.hotkeys.open_settings,
-        );
+        ui.add_space(10.0);
+
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Credits").strong());
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.strong("Author:");
+                ui.label("Tom (PlatyLord)");
+            });
+            ui.horizontal(|ui| {
+                ui.strong("Co-Built With:");
+                ui.label("Antigravity (Google DeepMind)");
+            });
+        });
+
         ui.add_space(8.0);
         ui.group(|ui| {
-            ui.label(egui::RichText::new("Mouse Drag Modifiers").strong());
-            ui.horizontal(|ui| {
-                ui.label("Move / Resize Modifier:");
-                egui::ComboBox::from_id_salt("mod_move_resize")
-                    .selected_text(&self.config.hotkeys.move_resize_modifier)
-                    .show_ui(ui, |ui| {
-                        for m in ["Alt", "Ctrl", "Shift", "Win"] {
-                            ui.selectable_value(
-                                &mut self.config.hotkeys.move_resize_modifier,
-                                m.to_string(),
-                                m,
-                            );
-                        }
-                    });
+            ui.label(egui::RichText::new("License").strong());
+            ui.add_space(4.0);
+            ui.label("License: None (Unlicensed)");
+            ui.label(
+                egui::RichText::new(
+                    "No formal open-source license is attached to this project.",
+                )
+                .small()
+                .weak(),
+            );
+        });
 
-                ui.add_space(20.0);
-                ui.label("Monitor-Lock Modifier:");
-                egui::ComboBox::from_id_salt("mod_lock")
-                    .selected_text(&self.config.hotkeys.monitor_lock_modifier)
-                    .show_ui(ui, |ui| {
-                        for m in ["Ctrl", "Shift", "Alt", "Win"] {
-                            ui.selectable_value(
-                                &mut self.config.hotkeys.monitor_lock_modifier,
-                                m.to_string(),
-                                m,
-                            );
-                        }
-                    });
-            });
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label("Nearest-Corner Resize Modifier:");
-                egui::ComboBox::from_id_salt("mod_corner_resize")
-                    .selected_text(&self.config.hotkeys.corner_resize_modifier)
-                    .show_ui(ui, |ui| {
-                        for m in ["Shift", "Ctrl", "Alt", "Win", "Disabled"] {
-                            ui.selectable_value(
-                                &mut self.config.hotkeys.corner_resize_modifier,
-                                m.to_string(),
-                                m,
-                            );
-                        }
-                    });
-                ui.label(
-                    egui::RichText::new("(Hold Move/Resize + this key + Right-Drag to grab nearest corner)")
-                        .small()
-                        .weak(),
-                );
-            });
-            if self
-                .config
-                .hotkeys
-                .move_resize_modifier
-                .eq_ignore_ascii_case(&self.config.hotkeys.monitor_lock_modifier)
-            {
-                ui.colored_label(
-                    Color32::from_rgb(251, 191, 36),
-                    "Warning: Move/Resize and Monitor-Lock modifiers are set to the same key.",
-                );
-            }
-            if !self
-                .config
-                .hotkeys
-                .corner_resize_modifier
-                .eq_ignore_ascii_case("Disabled")
-                && self
-                    .config
-                    .hotkeys
-                    .move_resize_modifier
-                    .eq_ignore_ascii_case(&self.config.hotkeys.corner_resize_modifier)
-            {
-                ui.colored_label(
-                    Color32::from_rgb(251, 191, 36),
-                    "Warning: Move/Resize and Nearest-Corner Resize modifiers are set to the same key.",
-                );
-            }
+        ui.add_space(8.0);
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Portability & Runtime Info").strong());
+            ui.add_space(4.0);
+            let path_str = config_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "zones.json".to_string());
+            ui.label(format!("Configuration file: {path_str}"));
+            ui.label(
+                egui::RichText::new(
+                    "Zero installer, zero external DLL dependencies, and zero %APPDATA% or Windows Registry writes.",
+                )
+                .small()
+                .weak(),
+            );
         });
     }
 
@@ -1079,12 +1277,13 @@ impl eframe::App for SettingsApp {
                     SettingsTab::Layouts,
                     "Layouts & Visual Zone Editor",
                 );
-                ui.selectable_value(&mut self.tab, SettingsTab::Hotkeys, "Hotkeys & Modifiers");
+                ui.selectable_value(&mut self.tab, SettingsTab::Hotkeys, "Shortcuts & Modifiers");
                 ui.selectable_value(
                     &mut self.tab,
                     SettingsTab::Appearance,
                     "Appearance & Behavior",
                 );
+                ui.selectable_value(&mut self.tab, SettingsTab::About, "About & Credits");
             });
             ui.add_space(2.0);
         });
@@ -1135,6 +1334,7 @@ impl eframe::App for SettingsApp {
             SettingsTab::Layouts => self.render_layouts_tab(ui),
             SettingsTab::Hotkeys => self.render_hotkeys_tab(ui),
             SettingsTab::Appearance => self.render_appearance_tab(ui),
+            SettingsTab::About => self.render_about_tab(ui),
         });
     }
 }
