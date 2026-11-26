@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod config;
+mod gui;
 mod hook;
 mod hotkeys;
 mod monitor;
@@ -42,11 +43,12 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetAncestor, GetCursorPos,
-    GetForegroundWindow, GetMessageW, KillTimer, PostQuitMessage, RegisterClassW,
-    RegisterWindowMessageW, SetTimer, TranslateMessage, GA_ROOT, HWND_MESSAGE, MSG,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY,
-    WM_DISPLAYCHANGE, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetAncestor,
+    GetCursorPos, GetForegroundWindow, GetMessageW, KillTimer, PostQuitMessage, RegisterClassW,
+    RegisterWindowMessageW, SetForegroundWindow, SetTimer, ShowWindow, TranslateMessage, GA_ROOT,
+    HWND_MESSAGE, MSG, SW_RESTORE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND,
+    WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_RBUTTONUP,
+    WM_TIMER, WNDCLASSW,
 };
 
 pub const WM_ZONESNAP_RELOAD: u32 = WM_APP + 11;
@@ -490,7 +492,22 @@ impl DaemonState {
     }
 
     fn open_settings(&self) {
-        // Settings GUI launched in Milestone 6
+        unsafe {
+            let title: Vec<u16> = "ZoneSnap \u{2014} Settings & Zone Editor"
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            if let Ok(existing) = FindWindowW(PCWSTR::null(), PCWSTR(title.as_ptr())) {
+                if !existing.0.is_null() {
+                    let _ = ShowWindow(existing, SW_RESTORE);
+                    let _ = SetForegroundWindow(existing);
+                    return;
+                }
+            }
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = std::process::Command::new(exe).arg("--settings").spawn();
+        }
     }
 
     fn handle_hotkey(&mut self, id: i32) {
@@ -940,6 +957,11 @@ fn create_daemon_window() -> Option<HWND> {
 fn main() {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+
+    if std::env::args().any(|a| a == "--settings") {
+        gui::run_settings_window(WM_ZONESNAP_RELOAD);
+        return;
     }
 
     let monitors = enumerate_monitors();
