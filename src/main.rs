@@ -27,9 +27,10 @@ use crate::tray::{
 use crate::window_ops::{
     cancel_modal_move, clip_cursor_to_monitor, compute_resized_rect, detect_nearest_corner,
     detect_resize_edges, get_root_window_at, get_window_rect, hwnd_to_isize, is_excluded_app,
-    is_manageable_window, is_resizable_window, is_titlebar_hit, is_valid_window, isize_to_hwnd,
-    move_window_nosize, resize_window, restore_if_maximized, restore_unsnapped_window,
-    send_menu_mask_key, snap_window_flush, unclip_cursor, ResizeEdges,
+    is_manageable_window, is_maximizable_window, is_resizable_window, is_titlebar_hit,
+    is_valid_window, isize_to_hwnd, maximize_window_on_monitor, move_window_nosize, resize_window,
+    restore_if_maximized, restore_unsnapped_window, send_menu_mask_key, snap_window_flush,
+    unclip_cursor, ResizeEdges,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -94,6 +95,7 @@ enum DragSession {
         hwnd: isize,
         grab_offset_x: i32,
         grab_offset_y: i32,
+        maximize_target: Option<MonitorInfo>,
     },
     AltResize {
         hwnd: isize,
@@ -501,11 +503,13 @@ impl DaemonState {
                     hwnd,
                     grab_offset_x,
                     grab_offset_y,
+                    ..
                 } => {
                     self.drag = DragSession::AltMove {
                         hwnd,
                         grab_offset_x,
                         grab_offset_y,
+                        maximize_target: None,
                     };
                     self.shared.set_mode(HookMode::AltMoving);
                 }
@@ -695,7 +699,10 @@ impl DaemonState {
                     return;
                 };
                 if was_max {
-                    move_window_nosize(hwnd, x - rect.width() / 2, (y - 16).max(0));
+                    let mon_top = monitor_from_point(x, y)
+                        .map(|m| m.rc_work.top)
+                        .unwrap_or(0);
+                    move_window_nosize(hwnd, x - rect.width() / 2, (y - 16).max(mon_top));
                     if let Some(updated) = get_window_rect(hwnd) {
                         rect = updated;
                     }
@@ -710,6 +717,7 @@ impl DaemonState {
                     hwnd: hwnd_to_isize(hwnd),
                     grab_offset_x: x - rect.left,
                     grab_offset_y: y - rect.top,
+                    maximize_target: None,
                 };
                 let lock_vk = self.shared.lock_mod_vk.load(Ordering::Acquire);
                 let lock_down = unsafe { ((GetAsyncKeyState(lock_vk) as u16) & 0x8000) != 0 };
@@ -746,6 +754,12 @@ impl DaemonState {
                 };
             }
             HookEvent::TriggerOverlayFromDrag { x, y } => {
+                if let DragSession::AltMove {
+                    maximize_target, ..
+                } = &mut self.drag
+                {
+                    *maximize_target = None;
+                }
                 let target_hwnd = match &self.drag {
                     DragSession::Standard { hwnd, .. } | DragSession::AltMove { hwnd, .. } => *hwnd,
                     _ => {
@@ -799,6 +813,19 @@ impl DaemonState {
                         return;
                     }
                 }
+                if let DragSession::AltMove {
+                    hwnd,
+                    maximize_target: Some(ref mon),
+                    ..
+                } = self.drag
+                {
+                    let mon_clone = mon.clone();
+                    self.overlay.hide();
+                    self.snapped_cache.remove(&hwnd);
+                    maximize_window_on_monitor(isize_to_hwnd(hwnd), &mon_clone);
+                    self.end_drag();
+                    return;
+                }
                 if let DragSession::Standard {
                     hwnd,
                     start_x,
@@ -840,6 +867,7 @@ impl DaemonState {
                 hwnd,
                 grab_offset_x,
                 grab_offset_y,
+                ..
             } = sess.return_drag
             {
                 move_window_nosize(isize_to_hwnd(hwnd), x - grab_offset_x, y - grab_offset_y);
@@ -884,8 +912,31 @@ impl DaemonState {
                 hwnd,
                 grab_offset_x,
                 grab_offset_y,
+                ref mut maximize_target,
             } => {
-                move_window_nosize(isize_to_hwnd(hwnd), x - grab_offset_x, y - grab_offset_y);
+                let target = isize_to_hwnd(hwnd);
+                move_window_nosize(target, x - grab_offset_x, y - grab_offset_y);
+                if self.config.behavior.drag_top_maximize && is_maximizable_window(target) {
+                    if let Some(mon) = monitor_from_point(x, y) {
+                        if y <= mon.rc_work.top + 10 {
+                            *maximize_target = Some(mon.clone());
+                            self.overlay
+                                .render_maximize_preview(mon.rc_work, &self.config.appearance);
+                        } else if maximize_target.is_some()
+                            && (y > mon.rc_work.top + 24
+                                || maximize_target
+                                    .as_ref()
+                                    .map(|m| m.profile_key() != mon.profile_key())
+                                    .unwrap_or(false))
+                        {
+                            *maximize_target = None;
+                            self.overlay.hide();
+                        }
+                    }
+                } else if maximize_target.is_some() {
+                    *maximize_target = None;
+                    self.overlay.hide();
+                }
             }
             DragSession::AltResize {
                 hwnd,

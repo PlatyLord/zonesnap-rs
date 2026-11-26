@@ -15,8 +15,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     ClipCursor, GetAncestor, GetClassNameW, GetWindowLongW, GetWindowRect,
     GetWindowThreadProcessId, IsWindow, IsWindowVisible, IsZoomed, PostMessageW,
     SendMessageTimeoutW, SetWindowPos, ShowWindow, WindowFromPoint, GA_ROOT, GWL_STYLE, HTCAPTION,
-    SMTO_ABORTIFHUNG, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE, WM_CANCELMODE,
-    WM_NCHITTEST, WS_CHILD, WS_THICKFRAME,
+    SMTO_ABORTIFHUNG, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_MAXIMIZE, SW_RESTORE,
+    WM_CANCELMODE, WM_NCHITTEST, WS_CHILD, WS_MAXIMIZEBOX, WS_THICKFRAME,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +165,32 @@ pub fn is_resizable_window(hwnd: HWND) -> bool {
     }
     let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) as u32 };
     (style & WS_THICKFRAME.0) != 0
+}
+
+/// Returns true if the window can be maximized (`WS_THICKFRAME | WS_MAXIMIZEBOX`).
+pub fn is_maximizable_window(hwnd: HWND) -> bool {
+    if hwnd.0.is_null() {
+        return false;
+    }
+    let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) as u32 };
+    (style & WS_THICKFRAME.0) != 0 && (style & WS_MAXIMIZEBOX.0) != 0
+}
+
+/// Maximize `hwnd` onto `monitor`, shifting it onto `monitor.rc_work` first if needed.
+pub fn maximize_window_on_monitor(hwnd: HWND, monitor: &MonitorInfo) {
+    if !is_maximizable_window(hwnd) {
+        return;
+    }
+    if let Some(rect) = get_window_rect(hwnd) {
+        let cx = rect.left + rect.width() / 2;
+        let cy = rect.top + rect.height() / 2;
+        if !monitor.rc_monitor.contains(cx, cy) {
+            move_window_nosize(hwnd, monitor.rc_work.left + 32, monitor.rc_work.top + 32);
+        }
+    }
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_MAXIMIZE);
+    }
 }
 
 /// If `hwnd` is maximized (`IsZoomed`), restore it with `SW_RESTORE` and return `true`.

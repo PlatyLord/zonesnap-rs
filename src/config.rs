@@ -39,10 +39,16 @@ impl Default for OverlayStyle {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BehaviorConfig {
     pub restore_on_unsnap: bool,
+    #[serde(default = "default_true")]
+    pub drag_top_maximize: bool,
     pub excluded_apps: Vec<String>,
 }
 
@@ -50,6 +56,7 @@ impl Default for BehaviorConfig {
     fn default() -> Self {
         Self {
             restore_on_unsnap: true,
+            drag_top_maximize: true,
             excluded_apps: vec!["mstsc.exe".to_string(), "vmconnect.exe".to_string()],
         }
     }
@@ -362,6 +369,7 @@ mod tests {
         cfg.appearance.border_color = [10, 200, 120];
         cfg.appearance.zone_bg_opacity = 0.25;
         cfg.behavior.restore_on_unsnap = false;
+        cfg.behavior.drag_top_maximize = false;
         cfg.behavior.excluded_apps = vec!["notepad.exe".to_string()];
         cfg.hotkeys.activate_overlay = HotkeySpec {
             modifiers: vec!["Ctrl".to_string(), "Alt".to_string()],

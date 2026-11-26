@@ -1008,6 +1008,10 @@ impl SettingsApp {
                 &mut self.config.behavior.restore_on_unsnap,
                 "Restore original window size when dragging a snapped window away (unsnap)",
             );
+            ui.checkbox(
+                &mut self.config.behavior.drag_top_maximize,
+                "Maximize window when Alt-dragging to the top edge of a monitor",
+            );
         });
 
         ui.add_space(8.0);

@@ -43,7 +43,7 @@ Drop `zonesnap.exe` into any folder (even a USB drive) and run it—no installer
 
 ### 2. Alt Move & Resize (Drag Anywhere Inside a Window)
 
-- **Move (`Alt + Left-Drag`):** Hold `Alt` and left-drag from _anywhere_ inside a window to move it smoothly. Tap **Right-Click** mid-drag to hand off directly to the zone overlay.
+- **Move (`Alt + Left-Drag`):** Hold `Alt` and left-drag from _anywhere_ inside a window to move it smoothly. Tap **Right-Click** mid-drag to hand off directly to the zone overlay, or drag the cursor to the top edge of any monitor to preview and **Maximize** on release (`drag_top_maximize`).
 - **Resize (`Alt + Right-Drag`):** Hold `Alt` and right-drag anywhere inside a window. ZoneSnap divides the window into a 3×3 grid and resizes smoothly from the nearest edge or corner.
 - **Nearest-Corner Resize (`Alt + Shift + Right-Drag`):** Hold `Alt + Shift` (configurable via `corner_resize_modifier`) and right-drag anywhere inside a window to always grab and resize from the nearest corner (2×2 quadrants), even if your cursor starts near the center or middle of an edge.
 
@@ -122,6 +122,7 @@ When a window is snapped by ZoneSnap, its pre-snap position and size are cached 
   },
   "behavior": {
     "restore_on_unsnap": true,
+    "drag_top_maximize": true,
     "excluded_apps": ["mstsc.exe", "vmconnect.exe"]
   },
   "hotkeys": {
@@ -168,6 +169,7 @@ When a window is snapped by ZoneSnap, its pre-snap position and size are cached 
 | `appearance` | `border_color`          | `[56, 189, 248]`                 | RGB border color of active zone outline                                                      |
 | `appearance` | `zone_bg_opacity`       | `0.14`                           | Opacity of inactive custom zone cards (`0.0`–`0.50`)                                         |
 | `behavior`   | `restore_on_unsnap`     | `true`                           | Restore original window size when dragged away                                               |
+| `behavior`   | `drag_top_maximize`     | `true`                           | Maximize window when `Alt + Left-Drag` reaches the top edge of a monitor                     |
 | `behavior`   | `excluded_apps`         | `["mstsc.exe", "vmconnect.exe"]` | Lowercase executable names where mouse hooks pass through untouched                          |
 | `hotkeys`    | `activate_overlay`      | `Win+Alt+Z`                      | Global hotkey to open overlay for focused window                                             |
 | `hotkeys`    | `open_settings`         | `Win+Alt+E`                      | Global hotkey to open Settings & Zone Editor                                                 |

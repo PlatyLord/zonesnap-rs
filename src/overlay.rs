@@ -190,6 +190,7 @@ pub struct OverlayWindow {
     cached_base: Vec<u32>,
     cached_base_key: Option<BaseLayerKey>,
     last_frame_key: Option<FrameKey>,
+    last_maximize_key: Option<(Rect, OverlayStyle)>,
 }
 
 unsafe extern "system" fn overlay_wnd_proc(
@@ -249,6 +250,7 @@ impl OverlayWindow {
                 cached_base: Vec::new(),
                 cached_base_key: None,
                 last_frame_key: None,
+                last_maximize_key: None,
             })
         }
     }
@@ -348,9 +350,101 @@ impl OverlayWindow {
             self.visible = false;
         }
         self.last_frame_key = None;
+        self.last_maximize_key = None;
+    }
+
+    pub fn render_maximize_preview(&mut self, work: Rect, style: &OverlayStyle) {
+        let key = (work, style.clone());
+        if self.visible && self.last_maximize_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.last_frame_key = None;
+
+        if work != self.current_work || !self.visible {
+            self.show_for_monitor(work);
+        }
+
+        let w = work.width().max(1);
+        let h = work.height().max(1);
+        if !self.ensure_dib(w, h) {
+            return;
+        }
+
+        let total_px = (w as usize) * (h as usize);
+        let hi = style.highlight_color;
+        let hi_a = (style.highlight_opacity.clamp(0.05, 0.95) * 255.0).round() as u8;
+        let bd = style.border_color;
+
+        unsafe {
+            let buf = std::slice::from_raw_parts_mut(self.bits_ptr, total_px);
+            buf.fill(premul_bgra(12, 16, 24, 72));
+            let inset = 8;
+            let rw = (w - inset * 2).max(16);
+            let rh = (h - inset * 2).max(16);
+            fill_rect(buf, w, h, inset, inset, rw, rh, hi[0], hi[1], hi[2], hi_a);
+            stroke_rect(buf, w, h, inset, inset, rw, rh, 3, bd[0], bd[1], bd[2], 240);
+
+            let pill_w = 152.min(rw);
+            let pill_h = 42.min(rh);
+            let px = (w - pill_w) / 2;
+            let py = (h - pill_h) / 2;
+            fill_rounded_rect(buf, w, h, px, py, pill_w, pill_h, 10, 15, 23, 42, 230);
+            stroke_rect(
+                buf,
+                w,
+                h,
+                px + 2,
+                py + 2,
+                pill_w - 4,
+                pill_h - 4,
+                1,
+                bd[0],
+                bd[1],
+                bd[2],
+                180,
+            );
+            draw_aa_text_on_bgra(
+                buf,
+                w,
+                h,
+                px,
+                py,
+                pill_w,
+                pill_h,
+                "Maximize",
+                19,
+                [248, 250, 252],
+            );
+
+            let pt_dst = POINT {
+                x: work.left,
+                y: work.top,
+            };
+            let size = SIZE { cx: w, cy: h };
+            let pt_src = POINT { x: 0, y: 0 };
+            let blend = BLENDFUNCTION {
+                BlendOp: AC_SRC_OVER as u8,
+                BlendFlags: 0,
+                SourceConstantAlpha: 255,
+                AlphaFormat: AC_SRC_ALPHA as u8,
+            };
+            let _ = UpdateLayeredWindow(
+                self.hwnd,
+                HDC::default(),
+                Some(&pt_dst),
+                Some(&size),
+                self.mem_dc,
+                Some(&pt_src),
+                COLORREF(0),
+                Some(&blend),
+                ULW_ALPHA,
+            );
+        }
+        self.last_maximize_key = Some(key);
     }
 
     pub fn render(&mut self, state: &OverlayRenderState<'_>) {
+        self.last_maximize_key = None;
         let mut sorted_active: Vec<usize> = state.active_zones.iter().copied().collect();
         sorted_active.sort_unstable();
 
