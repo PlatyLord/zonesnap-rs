@@ -1,5 +1,5 @@
+use crate::config::{Layout, LayoutMode, OverlayStyle};
 use crate::monitor::Rect;
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ffi::c_void;
 use windows::core::{w, PCWSTR};
@@ -18,38 +18,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SW_SHOWNA, ULW_ALPHA, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum LayoutMode {
-    DynamicGrid { cols: u32, rows: u32 },
-    CustomZones { zones: Vec<[f32; 4]> },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Layout {
-    pub name: String,
-    pub mode: LayoutMode,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct OverlayStyle {
-    pub highlight_color: [u8; 3],
-    pub highlight_opacity: f32,
-    pub border_color: [u8; 3],
-    pub zone_bg_opacity: f32,
-}
-
-impl Default for OverlayStyle {
-    fn default() -> Self {
-        Self {
-            highlight_color: [56, 189, 248],
-            highlight_opacity: 0.35,
-            border_color: [56, 189, 248],
-            zone_bg_opacity: 0.14,
-        }
-    }
-}
 
 /// Map a screen coordinate `(x, y)` inside `work` to a 0-based grid cell `(col, row)`.
 pub fn grid_cell_at(work: Rect, cols: u32, rows: u32, x: i32, y: i32) -> (u32, u32) {

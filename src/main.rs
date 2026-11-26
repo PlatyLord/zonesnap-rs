@@ -1,20 +1,24 @@
 #![windows_subsystem = "windows"]
 
+mod config;
 mod hook;
 mod hotkeys;
 mod monitor;
 mod overlay;
+mod tray;
 mod window_ops;
 
+use crate::config::{Config, LayoutMode};
 use crate::hook::{HookEvent, HookMode, HookSharedState, HookThread, WM_ZONESNAP_EVENT};
 use crate::hotkeys::{
-    HotkeyManager, HotkeySpec, HOTKEY_ACTIVATE_OVERLAY, HOTKEY_OPEN_SETTINGS,
+    modifier_to_vk, HotkeyManager, HOTKEY_ACTIVATE_OVERLAY, HOTKEY_OPEN_SETTINGS,
 };
-use crate::monitor::{monitor_from_point, MonitorInfo, Rect};
+use crate::monitor::{enumerate_monitors, monitor_from_point, MonitorInfo, Rect};
 use crate::overlay::{
     custom_zone_pixel_rect, grid_cell_at, grid_span_rect, hit_test_custom_zones, union_rects,
-    Layout, LayoutMode, OverlayRenderState, OverlayStyle, OverlayWindow,
+    OverlayRenderState, OverlayWindow,
 };
+use crate::tray::{TrayIcon, IDM_EXIT, IDM_RELOAD, IDM_SETTINGS, WM_TRAYICON};
 use crate::window_ops::{
     cancel_modal_move, clip_cursor_to_monitor, compute_resized_rect, detect_resize_edges,
     get_root_window_at, get_window_rect, hwnd_to_isize, is_excluded_app, is_manageable_window,
@@ -39,11 +43,13 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetAncestor, GetCursorPos,
-    GetForegroundWindow, GetMessageW, KillTimer, PostQuitMessage, RegisterClassW, SetTimer,
-    TranslateMessage, GA_ROOT, HWND_MESSAGE, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY,
-    WM_HOTKEY, WM_TIMER, WNDCLASSW,
+    GetForegroundWindow, GetMessageW, KillTimer, PostQuitMessage, RegisterClassW,
+    RegisterWindowMessageW, SetTimer, TranslateMessage, GA_ROOT, HWND_MESSAGE, MSG,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY,
+    WM_DISPLAYCHANGE, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
 };
 
+pub const WM_ZONESNAP_RELOAD: u32 = WM_APP + 11;
 const TIMER_TOAST_HIDE: usize = 1;
 const TIMER_POST_SNAP_REVERIFY: usize = 2;
 
@@ -101,48 +107,14 @@ struct OverlaySession {
     toast_text: Option<String>,
 }
 
-struct MonitorLayouts {
-    active_index: usize,
-    layouts: Vec<Layout>,
-}
-
-fn default_layouts() -> Vec<Layout> {
-    vec![
-        Layout {
-            name: "Dynamic Grid (12x6)".to_string(),
-            mode: LayoutMode::DynamicGrid { cols: 12, rows: 6 },
-        },
-        Layout {
-            name: "Columns (3-Up)".to_string(),
-            mode: LayoutMode::CustomZones {
-                zones: vec![
-                    [0.0, 0.0, 1.0 / 3.0, 1.0],
-                    [1.0 / 3.0, 0.0, 2.0 / 3.0, 1.0],
-                    [2.0 / 3.0, 0.0, 1.0, 1.0],
-                ],
-            },
-        },
-        Layout {
-            name: "Focus + Stack".to_string(),
-            mode: LayoutMode::CustomZones {
-                zones: vec![
-                    [0.0, 0.0, 0.65, 1.0],
-                    [0.65, 0.0, 1.0, 0.5],
-                    [0.65, 0.5, 1.0, 1.0],
-                ],
-            },
-        },
-    ]
-}
-
 struct DaemonState {
     daemon_hwnd: HWND,
     shared: Arc<HookSharedState>,
     rx: Receiver<HookEvent>,
     overlay: OverlayWindow,
-    style: OverlayStyle,
-    restore_on_unsnap: bool,
-    monitor_layouts: HashMap<String, MonitorLayouts>,
+    config: Config,
+    tray: Option<TrayIcon>,
+    taskbar_created_msg: u32,
     snapped_cache: HashMap<isize, Rect>,
     pending_reverify_snap: Option<(isize, Rect)>,
     hotkeys: HotkeyManager,
@@ -157,6 +129,9 @@ impl DaemonState {
         shared: Arc<HookSharedState>,
         rx: Receiver<HookEvent>,
         overlay: OverlayWindow,
+        config: Config,
+        tray: Option<TrayIcon>,
+        taskbar_created_msg: u32,
         hotkeys: HotkeyManager,
     ) -> Self {
         Self {
@@ -164,9 +139,9 @@ impl DaemonState {
             shared,
             rx,
             overlay,
-            style: OverlayStyle::default(),
-            restore_on_unsnap: true,
-            monitor_layouts: HashMap::new(),
+            config,
+            tray,
+            taskbar_created_msg,
             snapped_cache: HashMap::new(),
             pending_reverify_snap: None,
             hotkeys,
@@ -176,14 +151,33 @@ impl DaemonState {
         }
     }
 
-    fn ensure_monitor_layouts(&mut self, mon: &MonitorInfo) -> &mut MonitorLayouts {
-        let key = mon.profile_key();
-        self.monitor_layouts
-            .entry(key)
-            .or_insert_with(|| MonitorLayouts {
-                active_index: 0,
-                layouts: default_layouts(),
-            })
+    fn reload_config(&mut self) {
+        let monitors = enumerate_monitors();
+        let cfg = Config::load_or_create(&monitors);
+        self.apply_config(cfg);
+    }
+
+    fn apply_config(&mut self, cfg: Config) {
+        self.shared.set_excluded_apps(cfg.excluded_set());
+        self.shared.move_mod_vk.store(
+            modifier_to_vk(&cfg.hotkeys.move_resize_modifier),
+            Ordering::Release,
+        );
+        self.shared.lock_mod_vk.store(
+            modifier_to_vk(&cfg.hotkeys.monitor_lock_modifier),
+            Ordering::Release,
+        );
+        self.hotkeys.register_all(
+            self.daemon_hwnd,
+            &cfg.hotkeys.activate_overlay,
+            &cfg.hotkeys.open_settings,
+        );
+        self.config = cfg;
+    }
+
+    fn handle_display_change(&mut self) {
+        let monitors = enumerate_monitors();
+        self.config.ensure_monitors(&monitors);
     }
 
     fn update_cursor_lock(&mut self, locked: bool, cursor_x: i32, cursor_y: i32) {
@@ -261,9 +255,16 @@ impl DaemonState {
     }
 
     fn init_overlay_selection(&mut self, sess: &mut OverlaySession, x: i32, y: i32) {
-        let ml = self.ensure_monitor_layouts(&sess.monitor);
-        let idx = ml.active_index.min(ml.layouts.len().saturating_sub(1));
-        let layout = &ml.layouts[idx];
+        self.config
+            .ensure_monitors(std::slice::from_ref(&sess.monitor));
+        let key = sess.monitor.profile_key();
+        let Some(prof) = self.config.monitors.get(&key) else {
+            return;
+        };
+        let idx = prof
+            .active_layout_index
+            .min(prof.layouts.len().saturating_sub(1));
+        let layout = &prof.layouts[idx];
         sess.merged_zones.clear();
         sess.active_zones.clear();
         match &layout.mode {
@@ -295,9 +296,16 @@ impl DaemonState {
             }
         }
 
-        let ml = self.ensure_monitor_layouts(&sess.monitor);
-        let idx = ml.active_index.min(ml.layouts.len().saturating_sub(1));
-        let layout = &ml.layouts[idx];
+        self.config
+            .ensure_monitors(std::slice::from_ref(&sess.monitor));
+        let key = sess.monitor.profile_key();
+        let Some(prof) = self.config.monitors.get(&key) else {
+            return;
+        };
+        let idx = prof
+            .active_layout_index
+            .min(prof.layouts.len().saturating_sub(1));
+        let layout = &prof.layouts[idx];
 
         match &layout.mode {
             LayoutMode::DynamicGrid { cols, rows } => {
@@ -353,18 +361,17 @@ impl DaemonState {
             return;
         };
         let key = sess.monitor.profile_key();
-        let (active_idx, layouts) = match self.monitor_layouts.get(&key) {
-            Some(ml) => (ml.active_index, &ml.layouts),
-            None => return,
+        let Some(prof) = self.config.monitors.get(&key) else {
+            return;
         };
-        if layouts.is_empty() {
+        if prof.layouts.is_empty() {
             return;
         }
-        let layout = &layouts[active_idx.min(layouts.len() - 1)];
+        let layout = &prof.layouts[prof.active_layout_index.min(prof.layouts.len() - 1)];
         let render_state = OverlayRenderState {
             work: sess.monitor.rc_work,
             layout,
-            style: &self.style,
+            style: &self.config.appearance,
             grid_anchor: sess.grid_anchor,
             grid_current: sess.grid_current,
             active_zones: &sess.active_zones,
@@ -449,19 +456,23 @@ impl DaemonState {
         let Some(mut sess) = self.overlay_session.take() else {
             return;
         };
-        let layout_name = {
-            let ml = self.ensure_monitor_layouts(&sess.monitor);
-            let len = ml.layouts.len();
+        self.config
+            .ensure_monitors(std::slice::from_ref(&sess.monitor));
+        let key = sess.monitor.profile_key();
+        let layout_name = if let Some(prof) = self.config.monitors.get_mut(&key) {
+            let len = prof.layouts.len();
             if len > 0 {
                 if delta > 0 {
-                    ml.active_index = (ml.active_index + len - 1) % len;
+                    prof.active_layout_index = (prof.active_layout_index + len - 1) % len;
                 } else {
-                    ml.active_index = (ml.active_index + 1) % len;
+                    prof.active_layout_index = (prof.active_layout_index + 1) % len;
                 }
-                ml.layouts[ml.active_index].name.clone()
+                prof.layouts[prof.active_layout_index].name.clone()
             } else {
                 String::new()
             }
+        } else {
+            String::new()
         };
 
         let mut pt = POINT::default();
@@ -476,6 +487,10 @@ impl DaemonState {
         unsafe {
             let _ = SetTimer(self.daemon_hwnd, TIMER_TOAST_HIDE, 1500, None);
         }
+    }
+
+    fn open_settings(&self) {
+        // Settings GUI launched in Milestone 6
     }
 
     fn handle_hotkey(&mut self, id: i32) {
@@ -512,7 +527,7 @@ impl DaemonState {
                 self.show_overlay(hwnd_to_isize(target), pt.x, pt.y, true);
             }
             HOTKEY_OPEN_SETTINGS => {
-                // Settings GUI wired in Milestone 6
+                self.open_settings();
             }
             _ => {}
         }
@@ -567,7 +582,7 @@ impl DaemonState {
                     return;
                 };
                 send_menu_mask_key();
-                if self.restore_on_unsnap {
+                if self.config.behavior.restore_on_unsnap {
                     if let Some(restored) =
                         restore_unsnapped_window(hwnd, x, y, &mut self.snapped_cache, true)
                     {
@@ -668,7 +683,9 @@ impl DaemonState {
                     start_y,
                 } = self.drag
                 {
-                    if self.restore_on_unsnap && (x - start_x).abs() + (y - start_y).abs() > 6 {
+                    if self.config.behavior.restore_on_unsnap
+                        && (x - start_x).abs() + (y - start_y).abs() > 6
+                    {
                         restore_unsnapped_window(
                             isize_to_hwnd(hwnd),
                             x,
@@ -780,11 +797,44 @@ unsafe extern "system" fn daemon_wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    let taskbar_msg = DAEMON_STATE.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .map(|s| s.taskbar_created_msg)
+            .unwrap_or(0)
+    });
+    if taskbar_msg != 0 && msg == taskbar_msg {
+        DAEMON_STATE.with(|cell| {
+            if let Some(state) = cell.borrow().as_ref() {
+                if let Some(tray) = &state.tray {
+                    tray.re_add();
+                }
+            }
+        });
+        return LRESULT(0);
+    }
+
     match msg {
         WM_ZONESNAP_EVENT => {
             DAEMON_STATE.with(|cell| {
                 if let Some(state) = cell.borrow_mut().as_mut() {
                     state.process_events();
+                }
+            });
+            LRESULT(0)
+        }
+        WM_ZONESNAP_RELOAD => {
+            DAEMON_STATE.with(|cell| {
+                if let Some(state) = cell.borrow_mut().as_mut() {
+                    state.reload_config();
+                }
+            });
+            LRESULT(0)
+        }
+        WM_DISPLAYCHANGE => {
+            DAEMON_STATE.with(|cell| {
+                if let Some(state) = cell.borrow_mut().as_mut() {
+                    state.handle_display_change();
                 }
             });
             LRESULT(0)
@@ -796,6 +846,43 @@ unsafe extern "system" fn daemon_wnd_proc(
                     state.handle_hotkey(id);
                 }
             });
+            LRESULT(0)
+        }
+        WM_TRAYICON => {
+            let ev = (lparam.0 as u32) & 0xFFFF;
+            if ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU {
+                TrayIcon::show_context_menu(hwnd);
+            } else if ev == WM_LBUTTONDBLCLK {
+                DAEMON_STATE.with(|cell| {
+                    if let Some(state) = cell.borrow().as_ref() {
+                        state.open_settings();
+                    }
+                });
+            }
+            LRESULT(0)
+        }
+        WM_COMMAND => {
+            let cmd = (wparam.0 & 0xFFFF) as usize;
+            match cmd {
+                IDM_SETTINGS => {
+                    DAEMON_STATE.with(|cell| {
+                        if let Some(state) = cell.borrow().as_ref() {
+                            state.open_settings();
+                        }
+                    });
+                }
+                IDM_RELOAD => {
+                    DAEMON_STATE.with(|cell| {
+                        if let Some(state) = cell.borrow_mut().as_mut() {
+                            state.reload_config();
+                        }
+                    });
+                }
+                IDM_EXIT => {
+                    PostQuitMessage(0);
+                }
+                _ => {}
+            }
             LRESULT(0)
         }
         WM_TIMER => {
@@ -855,7 +942,7 @@ fn main() {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 
-    let _monitors = monitor::enumerate_monitors();
+    let monitors = enumerate_monitors();
 
     let mutex_handle = unsafe { CreateMutexW(None, false, w!("Local\\ZoneSnap_Daemon_Mutex")) };
     let Ok(handle) = mutex_handle else {
@@ -873,33 +960,45 @@ fn main() {
         return;
     };
 
+    let cfg = Config::load_or_create(&monitors);
     let mut hotkeys = HotkeyManager::new();
-    let default_activate = HotkeySpec {
-        modifiers: vec!["Win".to_string(), "Alt".to_string()],
-        key: "Z".to_string(),
-    };
-    let default_settings = HotkeySpec {
-        modifiers: vec!["Win".to_string(), "Alt".to_string()],
-        key: "E".to_string(),
-    };
-    hotkeys.register_all(daemon_hwnd, &default_activate, &default_settings);
-
-    let mut default_excluded = HashSet::new();
-    default_excluded.insert("mstsc.exe".to_string());
-    default_excluded.insert("vmconnect.exe".to_string());
+    hotkeys.register_all(
+        daemon_hwnd,
+        &cfg.hotkeys.activate_overlay,
+        &cfg.hotkeys.open_settings,
+    );
 
     let shared = Arc::new(HookSharedState::new(
         hwnd_to_isize(daemon_hwnd),
-        default_excluded,
+        cfg.excluded_set(),
     ));
+    shared.move_mod_vk.store(
+        modifier_to_vk(&cfg.hotkeys.move_resize_modifier),
+        Ordering::Release,
+    );
+    shared.lock_mod_vk.store(
+        modifier_to_vk(&cfg.hotkeys.monitor_lock_modifier),
+        Ordering::Release,
+    );
     shared
         .overlay_hwnd
         .store(overlay.hwnd_raw(), Ordering::Release);
 
     let (_hook_thread, rx) = HookThread::spawn(Arc::clone(&shared));
+    let tray = TrayIcon::new(daemon_hwnd, WM_TRAYICON);
+    let taskbar_created_msg = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
 
     DAEMON_STATE.with(|cell| {
-        *cell.borrow_mut() = Some(DaemonState::new(daemon_hwnd, shared, rx, overlay, hotkeys));
+        *cell.borrow_mut() = Some(DaemonState::new(
+            daemon_hwnd,
+            shared,
+            rx,
+            overlay,
+            cfg,
+            tray,
+            taskbar_created_msg,
+            hotkeys,
+        ));
     });
 
     unsafe {
