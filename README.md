@@ -294,4 +294,5 @@ Pushing a version tag (e.g. `v1.0.0`) triggers [`.github/workflows/release.yml`]
 
 - **Author:** Tom (`PlatyLord`)
 - **Co-Built With:** Antigravity (Google DeepMind)
+- **Hero Screenshot Wallpaper:** ["Pigeon Council" (Nº 70)](https://wallhalla.com/wallpaper/df43ad5f-380b-4f00-b2a8-b50f545699d8) from [Wallhalla](https://wallhalla.com) (AI Hybrid, used under [Wallhalla's Free terms](https://wallhalla.com/terms); excluded from the project's GPL-3.0 license).
 - **License:** [GNU General Public License v3.0 (GPL-3.0)](LICENSE) — free to use, modify, and fork; derivative works must remain open source under GPL-3.0. Provided as-is with no warranty or active maintenance.
