@@ -162,6 +162,20 @@ pub fn is_resizable_window(hwnd: HWND) -> bool {
     (style & WS_THICKFRAME.0) != 0
 }
 
+/// If `hwnd` is maximized (`IsZoomed`), restore it with `SW_RESTORE` and return `true`.
+pub fn restore_if_maximized(hwnd: HWND) -> bool {
+    if hwnd.0.is_null() {
+        return false;
+    }
+    unsafe {
+        if IsZoomed(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+            return true;
+        }
+    }
+    false
+}
+
 /// Read the window's bounding rectangle in physical screen coordinates.
 pub fn get_window_rect(hwnd: HWND) -> Option<Rect> {
     if hwnd.0.is_null() {

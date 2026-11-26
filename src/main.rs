@@ -24,7 +24,8 @@ use crate::window_ops::{
     cancel_modal_move, clip_cursor_to_monitor, compute_resized_rect, detect_resize_edges,
     get_root_window_at, get_window_rect, hwnd_to_isize, is_excluded_app, is_manageable_window,
     is_resizable_window, is_titlebar_hit, isize_to_hwnd, move_window_nosize, resize_window,
-    restore_unsnapped_window, send_menu_mask_key, snap_window_flush, unclip_cursor, ResizeEdges,
+    restore_if_maximized, restore_unsnapped_window, send_menu_mask_key, snap_window_flush,
+    unclip_cursor, ResizeEdges,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -594,12 +595,18 @@ impl DaemonState {
                     self.end_drag();
                     return;
                 }
+                send_menu_mask_key();
+                let was_max = restore_if_maximized(hwnd);
                 let Some(mut rect) = get_window_rect(hwnd) else {
                     self.end_drag();
                     return;
                 };
-                send_menu_mask_key();
-                if self.config.behavior.restore_on_unsnap {
+                if was_max {
+                    move_window_nosize(hwnd, x - rect.width() / 2, (y - 16).max(0));
+                    if let Some(updated) = get_window_rect(hwnd) {
+                        rect = updated;
+                    }
+                } else if self.config.behavior.restore_on_unsnap {
                     if let Some(restored) =
                         restore_unsnapped_window(hwnd, x, y, &mut self.snapped_cache, true)
                     {
@@ -625,11 +632,12 @@ impl DaemonState {
                     self.end_drag();
                     return;
                 }
+                send_menu_mask_key();
+                restore_if_maximized(hwnd);
                 let Some(orig_rect) = get_window_rect(hwnd) else {
                     self.end_drag();
                     return;
                 };
-                send_menu_mask_key();
                 self.snapped_cache.remove(&hwnd_to_isize(hwnd));
                 let edges = detect_resize_edges(orig_rect, x, y);
                 self.drag = DragSession::AltResize {
