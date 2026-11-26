@@ -9,7 +9,7 @@ mod overlay;
 mod tray;
 mod window_ops;
 
-use crate::config::{Config, LayoutMode};
+use crate::config::{config_modified_time, Config, LayoutMode};
 use crate::hook::{HookEvent, HookMode, HookSharedState, HookThread, WM_ZONESNAP_EVENT};
 use crate::hotkeys::{
     modifier_to_vk, HotkeyManager, HOTKEY_ACTIVATE_OVERLAY, HOTKEY_OPEN_SETTINGS,
@@ -32,6 +32,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::time::SystemTime;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT,
@@ -47,14 +48,17 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW, GetAncestor,
     GetCursorPos, GetForegroundWindow, GetMessageW, KillTimer, PostQuitMessage, RegisterClassW,
     RegisterWindowMessageW, SetForegroundWindow, SetTimer, ShowWindow, TranslateMessage, GA_ROOT,
-    HWND_MESSAGE, MSG, SW_RESTORE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_COMMAND,
-    WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_RBUTTONUP,
-    WM_TIMER, WNDCLASSW,
+    MSG, SW_RESTORE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY,
+    WM_DISPLAYCHANGE, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
 };
 
-pub const WM_ZONESNAP_RELOAD: u32 = WM_APP + 11;
 const TIMER_TOAST_HIDE: usize = 1;
 const TIMER_POST_SNAP_REVERIFY: usize = 2;
+const TIMER_CONFIG_WATCH: usize = 3;
+
+pub fn reload_window_message() -> u32 {
+    unsafe { RegisterWindowMessageW(w!("ZoneSnap_ReloadConfig")) }
+}
 
 struct MutexGuard(HANDLE);
 impl Drop for MutexGuard {
@@ -116,6 +120,8 @@ struct DaemonState {
     rx: Receiver<HookEvent>,
     overlay: OverlayWindow,
     config: Config,
+    last_config_mtime: Option<SystemTime>,
+    reload_msg: u32,
     tray: Option<TrayIcon>,
     taskbar_created_msg: u32,
     snapped_cache: HashMap<isize, Rect>,
@@ -133,6 +139,8 @@ impl DaemonState {
         rx: Receiver<HookEvent>,
         overlay: OverlayWindow,
         config: Config,
+        last_config_mtime: Option<SystemTime>,
+        reload_msg: u32,
         tray: Option<TrayIcon>,
         taskbar_created_msg: u32,
         hotkeys: HotkeyManager,
@@ -143,6 +151,8 @@ impl DaemonState {
             rx,
             overlay,
             config,
+            last_config_mtime,
+            reload_msg,
             tray,
             taskbar_created_msg,
             snapped_cache: HashMap::new(),
@@ -158,6 +168,14 @@ impl DaemonState {
         let monitors = enumerate_monitors();
         let cfg = Config::load_or_create(&monitors);
         self.apply_config(cfg);
+        self.last_config_mtime = config_modified_time();
+    }
+
+    fn check_and_reload_if_changed(&mut self) {
+        let mtime = config_modified_time();
+        if mtime.is_some() && mtime != self.last_config_mtime {
+            self.reload_config();
+        }
     }
 
     fn apply_config(&mut self, cfg: Config) {
@@ -229,6 +247,7 @@ impl DaemonState {
     }
 
     fn show_overlay(&mut self, target_hwnd: isize, x: i32, y: i32, from_hotkey: bool) {
+        self.check_and_reload_if_changed();
         let Some(mon) = monitor_from_point(x, y) else {
             return;
         };
@@ -477,6 +496,8 @@ impl DaemonState {
         } else {
             String::new()
         };
+        let _ = self.config.save();
+        self.last_config_mtime = config_modified_time();
 
         let mut pt = POINT::default();
         unsafe {
@@ -822,11 +843,11 @@ unsafe extern "system" fn daemon_wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let taskbar_msg = DAEMON_STATE.with(|cell| {
+    let (taskbar_msg, reload_msg) = DAEMON_STATE.with(|cell| {
         cell.borrow()
             .as_ref()
-            .map(|s| s.taskbar_created_msg)
-            .unwrap_or(0)
+            .map(|s| (s.taskbar_created_msg, s.reload_msg))
+            .unwrap_or((0, 0))
     });
     if taskbar_msg != 0 && msg == taskbar_msg {
         DAEMON_STATE.with(|cell| {
@@ -838,20 +859,20 @@ unsafe extern "system" fn daemon_wnd_proc(
         });
         return LRESULT(0);
     }
+    if reload_msg != 0 && msg == reload_msg {
+        DAEMON_STATE.with(|cell| {
+            if let Some(state) = cell.borrow_mut().as_mut() {
+                state.reload_config();
+            }
+        });
+        return LRESULT(0);
+    }
 
     match msg {
         WM_ZONESNAP_EVENT => {
             DAEMON_STATE.with(|cell| {
                 if let Some(state) = cell.borrow_mut().as_mut() {
                     state.process_events();
-                }
-            });
-            LRESULT(0)
-        }
-        WM_ZONESNAP_RELOAD => {
-            DAEMON_STATE.with(|cell| {
-                if let Some(state) = cell.borrow_mut().as_mut() {
-                    state.reload_config();
                 }
             });
             LRESULT(0)
@@ -912,13 +933,17 @@ unsafe extern "system" fn daemon_wnd_proc(
         }
         WM_TIMER => {
             let timer_id = wparam.0;
-            let _ = KillTimer(hwnd, timer_id);
+            if timer_id != TIMER_CONFIG_WATCH {
+                let _ = KillTimer(hwnd, timer_id);
+            }
             DAEMON_STATE.with(|cell| {
                 if let Some(state) = cell.borrow_mut().as_mut() {
                     if timer_id == TIMER_TOAST_HIDE {
                         state.clear_toast();
                     } else if timer_id == TIMER_POST_SNAP_REVERIFY {
                         state.reverify_pending_snap();
+                    } else if timer_id == TIMER_CONFIG_WATCH {
+                        state.check_and_reload_if_changed();
                     }
                 }
             });
@@ -953,7 +978,7 @@ fn create_daemon_window() -> Option<HWND> {
             0,
             0,
             0,
-            HWND_MESSAGE,
+            HWND::default(),
             None,
             hinstance,
             None,
@@ -967,8 +992,9 @@ fn main() {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 
+    let reload_msg = reload_window_message();
     if std::env::args().any(|a| a == "--settings") {
-        gui::run_settings_window(WM_ZONESNAP_RELOAD);
+        gui::run_settings_window(reload_msg);
         return;
     }
 
@@ -991,6 +1017,7 @@ fn main() {
     };
 
     let cfg = Config::load_or_create(&monitors);
+    let last_mtime = config_modified_time();
     let mut hotkeys = HotkeyManager::new();
     hotkeys.register_all(
         daemon_hwnd,
@@ -1025,6 +1052,8 @@ fn main() {
             rx,
             overlay,
             cfg,
+            last_mtime,
+            reload_msg,
             tray,
             taskbar_created_msg,
             hotkeys,
@@ -1032,6 +1061,7 @@ fn main() {
     });
 
     unsafe {
+        let _ = SetTimer(daemon_hwnd, TIMER_CONFIG_WATCH, 1000, None);
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
             let _ = TranslateMessage(&msg);

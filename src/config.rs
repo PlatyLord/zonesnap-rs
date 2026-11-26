@@ -2,8 +2,9 @@ use crate::hotkeys::HotkeySpec;
 use crate::monitor::MonitorInfo;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -162,6 +163,12 @@ pub fn config_path() -> io::Result<PathBuf> {
     Ok(dir.join("zones.json"))
 }
 
+/// Return the last-modified timestamp of `zones.json` if accessible.
+pub fn config_modified_time() -> Option<SystemTime> {
+    let path = config_path().ok()?;
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
 impl Config {
     pub fn ensure_monitors(&mut self, monitors: &[MonitorInfo]) -> bool {
         let mut changed = false;
@@ -205,11 +212,17 @@ impl Config {
     }
 
     pub fn load_or_create_at(path: &Path, monitors: &[MonitorInfo]) -> Self {
-        if let Ok(raw) = std::fs::read_to_string(path) {
-            if let Ok(mut cfg) = serde_json::from_str::<Config>(&raw) {
-                cfg.ensure_monitors(monitors);
-                return cfg;
+        if path.exists() {
+            if let Ok(raw) = std::fs::read_to_string(path) {
+                if let Ok(mut cfg) = serde_json::from_str::<Config>(&raw) {
+                    cfg.ensure_monitors(monitors);
+                    return cfg;
+                }
             }
+            // Existing file could not be read or parsed; return in-memory defaults without overwriting disk.
+            let mut cfg = Self::default();
+            cfg.ensure_monitors(monitors);
+            return cfg;
         }
 
         let mut cfg = Self::default();
@@ -224,16 +237,26 @@ impl Config {
     }
 
     pub fn save_at(&self, path: &Path) -> io::Result<()> {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, &json).is_ok() {
-            if std::fs::rename(&tmp, path).is_ok() {
-                return Ok(());
-            }
-            let _ = std::fs::remove_file(&tmp);
+        let write_tmp = (|| -> io::Result<()> {
+            let mut file = std::fs::File::create(&tmp)?;
+            file.write_all(json.as_bytes())?;
+            file.sync_all()?;
+            std::fs::rename(&tmp, path)
+        })();
+        if write_tmp.is_ok() {
+            return Ok(());
         }
-        std::fs::write(path, json)
+        let _ = std::fs::remove_file(&tmp);
+
+        let mut file = std::fs::File::create(path)?;
+        file.write_all(json.as_bytes())?;
+        file.sync_all()
     }
 
     pub fn excluded_set(&self) -> HashSet<String> {
@@ -301,6 +324,48 @@ mod tests {
         assert!(partial.behavior.restore_on_unsnap);
         assert_eq!(partial.hotkeys.move_resize_modifier, "Alt");
         assert!(partial.monitors.contains_key(r"\\.\DISPLAY1_2560x1440"));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn config_overwrite_preserves_all_edited_settings() {
+        let dir = std::env::temp_dir().join(format!(
+            "zonesnap_overwrite_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("zones.json");
+        let _ = std::fs::remove_file(&path);
+
+        let monitors = vec![sample_monitor()];
+        let mut cfg = Config::load_or_create_at(&path, &monitors);
+        let key = monitors[0].profile_key();
+
+        let prof = cfg.monitors.get_mut(&key).unwrap();
+        prof.active_layout_index = 1;
+        prof.layouts[0].mode = LayoutMode::DynamicGrid { cols: 8, rows: 4 };
+        prof.layouts[1].mode = LayoutMode::CustomZones {
+            zones: vec![[0.0, 0.0, 0.4, 1.0], [0.4, 0.0, 1.0, 1.0]],
+        };
+
+        cfg.appearance.highlight_color = [255, 100, 50];
+        cfg.appearance.highlight_opacity = 0.6;
+        cfg.appearance.border_color = [10, 200, 120];
+        cfg.appearance.zone_bg_opacity = 0.25;
+        cfg.behavior.restore_on_unsnap = false;
+        cfg.behavior.excluded_apps = vec!["notepad.exe".to_string()];
+        cfg.hotkeys.activate_overlay = HotkeySpec {
+            modifiers: vec!["Ctrl".to_string(), "Alt".to_string()],
+            key: "Q".to_string(),
+        };
+        cfg.hotkeys.move_resize_modifier = "Ctrl".to_string();
+        cfg.hotkeys.monitor_lock_modifier = "Shift".to_string();
+
+        cfg.save_at(&path).expect("save edited config");
+        let reloaded = Config::load_or_create_at(&path, &monitors);
+        assert_eq!(cfg, reloaded);
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);

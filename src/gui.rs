@@ -52,6 +52,7 @@ enum CanvasDrag {
 
 struct SettingsApp {
     config: Config,
+    saved_config: Config,
     monitors: Vec<MonitorInfo>,
     selected_monitor_key: String,
     selected_layout_idx: usize,
@@ -61,6 +62,7 @@ struct SettingsApp {
     tab: SettingsTab,
     new_excluded_app: String,
     status_msg: Option<String>,
+    status_is_error: bool,
     reload_msg: u32,
 }
 
@@ -80,8 +82,10 @@ impl SettingsApp {
             .map(|p| p.active_layout_index)
             .unwrap_or(0);
 
+        let saved_config = config.clone();
         Self {
             config,
+            saved_config,
             monitors,
             selected_monitor_key,
             selected_layout_idx,
@@ -91,35 +95,52 @@ impl SettingsApp {
             tab: SettingsTab::Layouts,
             new_excluded_app: String::new(),
             status_msg: None,
+            status_is_error: false,
             reload_msg,
         }
     }
 
-    fn save_and_notify_daemon(&mut self) {
+    fn has_unsaved_changes(&self) -> bool {
+        self.config != self.saved_config
+    }
+
+    fn save_and_notify_daemon(&mut self) -> bool {
+        let path_str = config_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "zones.json".to_string());
         match self.config.save() {
             Ok(()) => {
+                self.saved_config = self.config.clone();
+                self.status_is_error = false;
                 let mut reloaded = false;
                 unsafe {
-                    if let Ok(daemon_hwnd) = FindWindowExW(
-                        HWND_MESSAGE,
-                        HWND::default(),
-                        w!("ZoneSnap_Daemon_MsgWindow"),
-                        PCWSTR::null(),
-                    ) {
-                        if !daemon_hwnd.0.is_null() {
-                            let _ = PostMessageW(daemon_hwnd, self.reload_msg, WPARAM(0), LPARAM(0));
-                            reloaded = true;
-                        }
+                    let mut daemon_hwnd = FindWindowW(w!("ZoneSnap_Daemon_MsgWindow"), PCWSTR::null())
+                        .unwrap_or_default();
+                    if daemon_hwnd.0.is_null() {
+                        daemon_hwnd = FindWindowExW(
+                            HWND_MESSAGE,
+                            HWND::default(),
+                            w!("ZoneSnap_Daemon_MsgWindow"),
+                            PCWSTR::null(),
+                        )
+                        .unwrap_or_default();
+                    }
+                    if !daemon_hwnd.0.is_null() {
+                        let _ = PostMessageW(daemon_hwnd, self.reload_msg, WPARAM(0), LPARAM(0));
+                        reloaded = true;
                     }
                 }
                 self.status_msg = Some(if reloaded {
-                    "Saved zones.json and hot-reloaded ZoneSnap daemon.".to_string()
+                    format!("Saved to {path_str} and applied to ZoneSnap.")
                 } else {
-                    "Saved zones.json.".to_string()
+                    format!("Saved to {path_str}.")
                 });
+                true
             }
             Err(e) => {
-                self.status_msg = Some(format!("Failed to save zones.json: {e}"));
+                self.status_is_error = true;
+                self.status_msg = Some(format!("Failed to save {path_str}: {e}"));
+                false
             }
         }
     }
@@ -127,6 +148,8 @@ impl SettingsApp {
     fn reload_from_disk(&mut self) {
         self.monitors = enumerate_monitors();
         self.config = Config::load_or_create(&self.monitors);
+        self.saved_config = self.config.clone();
+        self.status_is_error = false;
         if !self.config.monitors.contains_key(&self.selected_monitor_key) {
             if let Some(first) = self.config.monitors.keys().next().cloned() {
                 self.selected_monitor_key = first;
@@ -206,7 +229,8 @@ impl SettingsApp {
             self.selected_layout_idx = layout_count.saturating_sub(1);
         }
 
-        // Layout selection & management toolbar
+        // Layout selection & management toolbar (selecting a layout makes it active for this monitor)
+        let mut clicked_layout: Option<usize> = None;
         ui.horizontal_wrapped(|ui| {
             let layout_names: Vec<String> = self
                 .config
@@ -222,9 +246,7 @@ impl SettingsApp {
                     .selectable_label(idx == self.selected_layout_idx, text)
                     .clicked()
                 {
-                    self.selected_layout_idx = idx;
-                    self.selected_zone_idx = Some(0);
-                    self.canvas_drag = CanvasDrag::None;
+                    clicked_layout = Some(idx);
                 }
             }
 
@@ -237,8 +259,11 @@ impl SettingsApp {
                             zones: vec![[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 1.0, 1.0]],
                         },
                     });
-                    self.selected_layout_idx = prof.layouts.len() - 1;
+                    let new_idx = prof.layouts.len() - 1;
+                    prof.active_layout_index = new_idx;
+                    self.selected_layout_idx = new_idx;
                     self.selected_zone_idx = Some(0);
+                    self.canvas_drag = CanvasDrag::None;
                 }
             }
         });
@@ -246,15 +271,21 @@ impl SettingsApp {
         let Some(prof) = self.config.monitors.get_mut(&self.selected_monitor_key) else {
             return;
         };
+        if let Some(idx) = clicked_layout {
+            if idx < prof.layouts.len() {
+                prof.active_layout_index = idx;
+                self.selected_layout_idx = idx;
+                self.selected_zone_idx = Some(0);
+                self.canvas_drag = CanvasDrag::None;
+            }
+        }
         if prof.layouts.is_empty() {
             return;
         }
         let sel_idx = self.selected_layout_idx;
         let can_delete = prof.layouts.len() > 1;
-        let is_active = prof.active_layout_index == sel_idx;
 
         let mut delete_layout = false;
-        let mut set_active = false;
         ui.horizontal(|ui| {
             ui.label("Name:");
             ui.add(egui::TextEdit::singleline(&mut prof.layouts[sel_idx].name).desired_width(200.0));
@@ -270,12 +301,7 @@ impl SettingsApp {
                 self.selected_zone_idx = Some(0);
             }
 
-            if ui
-                .add_enabled(!is_active, egui::Button::new("Set Active"))
-                .clicked()
-            {
-                set_active = true;
-            }
+            ui.colored_label(Color32::from_rgb(56, 189, 248), "★ Active");
             if ui
                 .add_enabled(can_delete, egui::Button::new("Delete Layout"))
                 .clicked()
@@ -284,9 +310,6 @@ impl SettingsApp {
             }
         });
 
-        if set_active {
-            prof.active_layout_index = sel_idx;
-        }
         if delete_layout && prof.layouts.len() > 1 {
             prof.layouts.remove(sel_idx);
             if prof.active_layout_index >= prof.layouts.len() {
@@ -948,6 +971,10 @@ impl SettingsApp {
 
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S)) {
+            self.save_and_notify_daemon();
+        }
+
         egui::TopBottomPanel::top("tabs_bar").show(ctx, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -967,25 +994,45 @@ impl eframe::App for SettingsApp {
         });
 
         egui::TopBottomPanel::bottom("footer_bar").show(ctx, |ui| {
-            ui.add_space(4.0);
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
+                let save_btn = egui::Button::new(
+                    egui::RichText::new("Save & Apply").color(Color32::WHITE).strong(),
+                )
+                .fill(Color32::from_rgb(2, 132, 199));
+                if ui.add(save_btn).clicked() {
+                    self.save_and_notify_daemon();
+                }
+                if ui.button("Save & Close").clicked() && self.save_and_notify_daemon() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                if ui.button("Reload").clicked() {
+                    self.reload_from_disk();
+                }
+                if self.has_unsaved_changes() {
+                    ui.add_space(8.0);
+                    ui.colored_label(
+                        Color32::from_rgb(251, 191, 36),
+                        "● Unsaved changes (Ctrl+S to save)",
+                    );
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
                 let path_str = config_path()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|_| "zones.json".to_string());
                 ui.label(egui::RichText::new(format!("Config: {path_str}")).small().weak());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Save & Apply").clicked() {
-                        self.save_and_notify_daemon();
-                    }
-                    if ui.button("Reload").clicked() {
-                        self.reload_from_disk();
-                    }
-                });
+                if let Some(msg) = &self.status_msg {
+                    ui.add_space(12.0);
+                    let color = if self.status_is_error {
+                        Color32::from_rgb(239, 68, 68)
+                    } else {
+                        Color32::from_rgb(34, 197, 94)
+                    };
+                    ui.colored_label(color, msg);
+                }
             });
-            if let Some(msg) = &self.status_msg {
-                ui.colored_label(Color32::from_rgb(56, 189, 248), msg);
-            }
-            ui.add_space(2.0);
+            ui.add_space(4.0);
         });
 
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
