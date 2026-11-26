@@ -138,24 +138,32 @@ impl GuiTheme {
         )
     }
 
-    pub fn recommended_overlay_rgb(self) -> ([u8; 3], [u8; 3]) {
+    pub fn recommended_overlay_colors(self) -> ([u8; 3], [u8; 3], [u8; 3]) {
         match self {
-            GuiTheme::Dark => ([56, 189, 248], [56, 189, 248]),
-            GuiTheme::Light => ([2, 132, 199], [2, 132, 199]),
-            GuiTheme::CatppuccinMocha => ([203, 166, 247], [180, 190, 254]),
-            GuiTheme::CatppuccinMacchiato => ([198, 160, 246], [138, 173, 244]),
-            GuiTheme::CatppuccinFrappe => ([202, 158, 230], [140, 170, 238]),
-            GuiTheme::CatppuccinLatte => ([136, 57, 239], [30, 102, 245]),
-            GuiTheme::Nord => ([136, 192, 208], [129, 161, 193]),
-            GuiTheme::TokyoNight => ([122, 162, 247], [187, 154, 247]),
-            GuiTheme::GruvboxDark => ([250, 189, 47], [215, 153, 33]),
-            GuiTheme::SolarizedLight => ([38, 139, 210], [42, 161, 152]),
+            GuiTheme::Dark => ([56, 189, 248], [56, 189, 248], [245, 158, 11]),
+            GuiTheme::Light => ([2, 132, 199], [2, 132, 199], [217, 119, 6]),
+            GuiTheme::CatppuccinMocha => ([203, 166, 247], [180, 190, 254], [250, 179, 135]),
+            GuiTheme::CatppuccinMacchiato => ([198, 160, 246], [138, 173, 244], [245, 169, 127]),
+            GuiTheme::CatppuccinFrappe => ([202, 158, 230], [140, 170, 238], [239, 159, 118]),
+            GuiTheme::CatppuccinLatte => ([136, 57, 239], [30, 102, 245], [254, 100, 11]),
+            GuiTheme::Nord => ([136, 192, 208], [129, 161, 193], [208, 135, 112]),
+            GuiTheme::TokyoNight => ([122, 162, 247], [187, 154, 247], [255, 158, 100]),
+            GuiTheme::GruvboxDark => ([131, 165, 152], [142, 192, 124], [254, 128, 25]),
+            GuiTheme::SolarizedLight => ([38, 139, 210], [42, 161, 152], [203, 75, 22]),
         }
     }
 }
 
 fn default_gui_scale() -> f32 {
     1.0
+}
+
+fn default_trigger_color() -> [u8; 3] {
+    [245, 158, 11]
+}
+
+fn default_trigger_opacity() -> f32 {
+    0.25
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -165,6 +173,10 @@ pub struct OverlayStyle {
     pub highlight_opacity: f32,
     pub border_color: [u8; 3],
     pub zone_bg_opacity: f32,
+    #[serde(default = "default_trigger_color")]
+    pub trigger_color: [u8; 3],
+    #[serde(default = "default_trigger_opacity")]
+    pub trigger_opacity: f32,
     #[serde(default = "default_gui_scale")]
     pub gui_scale: f32,
     #[serde(default)]
@@ -178,6 +190,8 @@ impl Default for OverlayStyle {
             highlight_opacity: 0.35,
             border_color: [56, 189, 248],
             zone_bg_opacity: 0.14,
+            trigger_color: default_trigger_color(),
+            trigger_opacity: default_trigger_opacity(),
             gui_scale: 1.0,
             gui_theme: GuiTheme::default(),
         }
@@ -482,6 +496,8 @@ mod tests {
         let partial = Config::load_or_create_at(&path, &monitors);
         assert!(partial.behavior.restore_on_unsnap);
         assert_eq!(partial.appearance.gui_theme, GuiTheme::Dark);
+        assert_eq!(partial.appearance.trigger_color, [245, 158, 11]);
+        assert!((partial.appearance.trigger_opacity - 0.25).abs() < 0.001);
         assert_eq!(partial.hotkeys.move_resize_modifier, "Alt");
         assert!(partial.monitors.contains_key(r"\\.\DISPLAY1_2560x1440"));
 
@@ -517,6 +533,8 @@ mod tests {
         cfg.appearance.highlight_opacity = 0.6;
         cfg.appearance.border_color = [10, 200, 120];
         cfg.appearance.zone_bg_opacity = 0.25;
+        cfg.appearance.trigger_color = [180, 90, 240];
+        cfg.appearance.trigger_opacity = 0.45;
         cfg.appearance.gui_scale = 1.25;
         cfg.appearance.gui_theme = GuiTheme::CatppuccinMocha;
         cfg.behavior.restore_on_unsnap = false;

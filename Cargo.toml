@@ -1,6 +1,6 @@
 [package]
 name = "zonesnap"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 description = "Lightweight, portable Windows window-snapping and window-management utility"
 license = "GPL-3.0-only"

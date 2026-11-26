@@ -960,6 +960,20 @@ fn paint_base_layer(
                 );
             }
             // Draw custom trigger drop pads on top so they sit cleanly above underlying columns
+            let tr = style.trigger_color;
+            let tr_alpha = style.trigger_opacity.clamp(0.05, 0.85);
+            let tr_a = (tr_alpha * 255.0).round() as u8;
+            // Compute badge text color against trigger pad composited over the dark overlay backdrop (12, 16, 24)
+            let comp_r = (tr[0] as f32 * tr_alpha + 12.0 * (1.0 - tr_alpha)) / 255.0;
+            let comp_g = (tr[1] as f32 * tr_alpha + 16.0 * (1.0 - tr_alpha)) / 255.0;
+            let comp_b = (tr[2] as f32 * tr_alpha + 24.0 * (1.0 - tr_alpha)) / 255.0;
+            let tr_lum = 0.2126 * comp_r + 0.7152 * comp_g + 0.0722 * comp_b;
+            let badge_rgb = if tr_lum > 0.30 {
+                [15, 23, 42]
+            } else {
+                [248, 250, 252]
+            };
+
             for (idx, z) in zones.iter().enumerate() {
                 if !z.has_custom_trigger() {
                     continue;
@@ -970,8 +984,8 @@ fn paint_base_layer(
                 let rw = (pxr.width() - GAP * 2).max(4);
                 let rh = (pxr.height() - GAP * 2).max(4);
 
-                fill_rect(buf, w, h, rx, ry, rw, rh, 245, 158, 11, 56);
-                stroke_rect(buf, w, h, rx, ry, rw, rh, 2, 251, 191, 36, 180);
+                fill_rect(buf, w, h, rx, ry, rw, rh, tr[0], tr[1], tr[2], tr_a);
+                stroke_rect(buf, w, h, rx, ry, rw, rh, 2, tr[0], tr[1], tr[2], 215);
 
                 let num = format!("{}", idx + 1);
                 let badge_w = 48.min(rw);
@@ -986,7 +1000,7 @@ fn paint_base_layer(
                     badge_h,
                     &num,
                     22,
-                    [254, 243, 199],
+                    badge_rgb,
                 );
             }
         }
@@ -1048,12 +1062,13 @@ fn paint_dynamic_layer(buf: &mut [u32], w: i32, h: i32, state: &OverlayRenderSta
                 stroke_rect(buf, w, h, rx, ry, rw, rh, 2, bd[0], bd[1], bd[2], 220);
 
                 if z.has_custom_trigger() {
+                    let tr = state.style.trigger_color;
                     let tpx = custom_zone_pixel_rect(state.work, z.effective_trigger());
                     let tx = tpx.left - state.work.left + GAP;
                     let ty = tpx.top - state.work.top + GAP;
                     let tw = (tpx.width() - GAP * 2).max(4);
                     let th = (tpx.height() - GAP * 2).max(4);
-                    stroke_rect(buf, w, h, tx, ty, tw, th, 2, 251, 191, 36, 220);
+                    stroke_rect(buf, w, h, tx, ty, tw, th, 2, tr[0], tr[1], tr[2], 235);
                 }
 
                 let num = format!("{}", idx + 1);

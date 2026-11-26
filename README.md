@@ -7,7 +7,7 @@
 
   <p>
     <a href="https://github.com/PlatyLord/zonesnap-rs/releases">
-      <img src="https://img.shields.io/badge/release-v1.1.0-38bdf8?style=flat-square" alt="Release v1.1.0" />
+      <img src="https://img.shields.io/badge/release-v1.2.0-38bdf8?style=flat-square" alt="Release v1.2.0" />
     </a>
     <a href="LICENSE">
       <img src="https://img.shields.io/badge/license-GPL--3.0-a6e3a1?style=flat-square" alt="License GPL-3.0" />
@@ -74,7 +74,7 @@
     <td width="50%" align="center">
       <img src="docs/zonesnap-editor-multipanel.png" alt="Custom Zones and Custom Trigger Area Editor" width="100%" /><br />
       <strong>Custom Zones &amp; Trigger Area Editor</strong><br />
-      <sub>Draw/resize snap bounds (blue) and compact drop triggers (amber).</sub>
+      <sub>Draw/resize snap bounds and compact drop triggers.</sub>
     </td>
     <td width="50%" align="center">
       <img src="docs/zonesnap-editor-grid.png" alt="Dynamic Grid Editor" width="100%" /><br />
@@ -131,7 +131,7 @@
 ### Highlights & Workflow Notes
 
 - **One-Handed Mouse-Button Modifier:** Remap `move_resize_modifier` to `Mouse Back`, `Mouse Forward`, or `Middle Click` in **Shortcuts & Modifiers** to hold that mouse button instead of `Alt` for Move, Resize, Top-Edge Maximize, and Overlay Hand-Off. Quick taps without dragging still fire your normal Back/Forward/Middle click on release.
-- **Custom Trigger Areas & Merging:** In Custom Zones mode, assign a compact amber **Trigger** box separate from a zone's full blue **Snap Output** bounds (ideal for a small Center Focus drop pad over side columns). Hover within `16px` of a shared border to auto-merge adjacent zones, or hold `Shift` across multiple zones.
+- **Custom Trigger Areas & Merging:** In Custom Zones mode, assign a compact **Trigger** pad separate from a zone's full **Snap Output** bounds (ideal for a small Center Focus drop pad over side columns), with customizable colors and opacities. Hover within `16px` of a shared border to auto-merge adjacent zones, or hold `Shift` across multiple zones.
 - **Dynamic Grid & Scroll Cycling:** Dynamic Grid (`2×2` up to `24×16`, default `12×6`) anchors at your starting cell and spans to the current cell. Scroll the mouse wheel while the overlay is open to cycle layouts on that monitor.
 - **Mixed-DPI, Taskbar Safety & Unsnap Restore:** Monitor profiles key by `<device_name>_<width>x<height>` and snap inside `rcWork` (never covering the taskbar), with a second-pass `DWMWA_EXTENDED_FRAME_BOUNDS` adjustment across DPI boundaries and automatic pre-snap size restoration when dragging a window away.
 - **Visual Editor Tabs:** Manage per-monitor layouts (Add, Duplicate, Copy to Monitor, Presets, Split V/H, Custom Trigger toggle), rebind hotkeys/modifiers alongside a live reference table, choose from **10 themes** (`Dark`, `Light`, `Catppuccin Mocha/Macchiato/Frappé/Latte`, `Nord`, `Tokyo Night`, `Gruvbox Dark`, `Solarized Light`) with **Match Overlay Colors** and text scaling (`85%–175%`), and maintain `excluded_apps`.
@@ -153,6 +153,8 @@
     "highlight_opacity": 0.35,
     "border_color": [56, 189, 248],
     "zone_bg_opacity": 0.14,
+    "trigger_color": [245, 158, 11],
+    "trigger_opacity": 0.25,
     "gui_scale": 1.0,
     "gui_theme": "dark"
   },
@@ -210,6 +212,8 @@
 | `appearance` | `highlight_opacity`      | `0.35`                           | Opacity of active zone fill (`0.05`–`0.85`)                                                                                                      |
 | `appearance` | `border_color`           | `[56, 189, 248]`                 | RGB border color of active zone outline                                                                                                          |
 | `appearance` | `zone_bg_opacity`        | `0.14`                           | Opacity of inactive custom zone cards (`0.0`–`0.50`)                                                                                             |
+| `appearance` | `trigger_color`          | `[245, 158, 11]`                 | RGB color of decoupled Custom Trigger drop pads                                                                                                  |
+| `appearance` | `trigger_opacity`        | `0.25`                           | Opacity of Custom Trigger pad fill (`0.05`–`0.85`)                                                                                               |
 | `appearance` | `gui_scale`              | `1.0`                            | Settings GUI text/UI scale multiplier (`0.85`–`1.75`, on top of Windows DPI scaling)                                                             |
 | `appearance` | `gui_theme`              | `"dark"`                         | Settings GUI theme (`dark`, `light`, `catppuccin_mocha`/`macchiato`/`frappe`/`latte`, `nord`, `tokyo_night`, `gruvbox_dark`, `solarized_light`)  |
 | `behavior`   | `restore_on_unsnap`      | `true`                           | Restore original window size when dragged away                                                                                                   |
@@ -250,7 +254,7 @@ cargo test
 cargo build --release
 ```
 
-The standalone GUI executable is written to `target\release\zonesnap.exe` (statically linking the MSVC CRT via `.cargo/config.toml`). Pushing a version tag (e.g. `v1.1.0`) triggers [`.github/workflows/release.yml`](.github/workflows/release.yml) to run `cargo test`, build `zonesnap.exe`, extract release notes from [CHANGELOG.md](CHANGELOG.md), and publish a GitHub Release automatically.
+The standalone GUI executable is written to `target\release\zonesnap.exe` (statically linking the MSVC CRT via `.cargo/config.toml`). Pushing a version tag (e.g. `v1.2.0`) triggers [`.github/workflows/release.yml`](.github/workflows/release.yml) to run `cargo test`, build `zonesnap.exe`, extract release notes from [CHANGELOG.md](CHANGELOG.md), and publish a GitHub Release automatically.
 
 ---
 

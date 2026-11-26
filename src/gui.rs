@@ -22,6 +22,86 @@ fn parse_gui_scale_input(s: &str) -> Option<f64> {
     Some(if v > 3.0 { v / 100.0 } else { v })
 }
 
+fn contrasting_text_color(bg: Color32) -> Color32 {
+    let linearize = |c: u8| -> f32 {
+        let s = c as f32 / 255.0;
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let lum = 0.2126 * linearize(bg.r()) + 0.7152 * linearize(bg.g()) + 0.0722 * linearize(bg.b());
+    if lum > 0.20 {
+        Color32::from_rgb(15, 23, 42)
+    } else {
+        Color32::WHITE
+    }
+}
+
+fn paint_color_swatch(ui: &mut egui::Ui, fill: Color32, border: Color32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 2.5, fill);
+    p.rect_stroke(rect, 2.5, Stroke::new(1.5_f32, border));
+}
+
+fn rect_overlap_area(a: EguiRect, b: EguiRect) -> f32 {
+    let inter = a.intersect(b);
+    if inter.is_positive() {
+        inter.width() * inter.height()
+    } else {
+        0.0
+    }
+}
+
+fn pick_non_overlapping_center(
+    sr: EguiRect,
+    pill_size: Vec2,
+    placed: &[EguiRect],
+    avoid: &[EguiRect],
+) -> Pos2 {
+    let pad = 10.0_f32;
+    let half_w = pill_size.x * 0.5;
+    let half_h = pill_size.y * 0.5;
+    let min_x = (sr.left() + half_w + pad).min(sr.center().x);
+    let max_x = (sr.right() - half_w - pad).max(sr.center().x);
+    let min_y = (sr.top() + half_h + pad).min(sr.center().y);
+    let max_y = (sr.bottom() - half_h - pad).max(sr.center().y);
+
+    let candidates = [
+        sr.center(),
+        Pos2::new(min_x, min_y),
+        Pos2::new(max_x, min_y),
+        Pos2::new(min_x, max_y),
+        Pos2::new(max_x, max_y),
+        Pos2::new(sr.center().x, min_y),
+        Pos2::new(sr.center().x, max_y),
+        Pos2::new(min_x, sr.center().y),
+        Pos2::new(max_x, sr.center().y),
+    ];
+
+    let mut best_pos = sr.center();
+    let mut best_area = f32::INFINITY;
+    for pos in candidates {
+        let clamped = Pos2::new(pos.x.clamp(min_x, max_x), pos.y.clamp(min_y, max_y));
+        let cand_rect = EguiRect::from_center_size(clamped, pill_size);
+        let area: f32 = placed
+            .iter()
+            .chain(avoid.iter())
+            .map(|r| rect_overlap_area(cand_rect, *r))
+            .sum();
+        if area <= 0.0 {
+            return clamped;
+        }
+        if area < best_area {
+            best_area = area;
+            best_pos = clamped;
+        }
+    }
+    best_pos
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ThemePalette {
     dark_mode: bool,
@@ -43,8 +123,6 @@ struct ThemePalette {
     canvas_grid: Color32,
     canvas_label: Color32,
     canvas_label_active: Color32,
-    trigger_accent: Color32,
-    trigger_text: Color32,
 }
 
 fn theme_palette(theme: GuiTheme) -> ThemePalette {
@@ -66,11 +144,9 @@ fn theme_palette(theme: GuiTheme) -> ThemePalette {
             success: Color32::from_rgb(34, 197, 94),
             error: Color32::from_rgb(239, 68, 68),
             canvas_bg: Color32::from_rgb(15, 23, 42),
-            canvas_grid: Color32::from_rgba_unmultiplied(203, 213, 225, 65),
+            canvas_grid: Color32::from_rgba_unmultiplied(203, 213, 225, 80),
             canvas_label: Color32::from_rgb(203, 213, 225),
             canvas_label_active: Color32::WHITE,
-            trigger_accent: Color32::from_rgb(245, 158, 11),
-            trigger_text: Color32::from_rgb(254, 243, 199),
         },
         GuiTheme::Light => ThemePalette {
             dark_mode: false,
@@ -89,11 +165,9 @@ fn theme_palette(theme: GuiTheme) -> ThemePalette {
             success: Color32::from_rgb(21, 128, 61),
             error: Color32::from_rgb(185, 28, 28),
             canvas_bg: Color32::from_rgb(226, 232, 240),
-            canvas_grid: Color32::from_rgba_unmultiplied(51, 65, 85, 55),
+            canvas_grid: Color32::from_rgba_unmultiplied(51, 65, 85, 80),
             canvas_label: Color32::from_rgb(51, 65, 85),
             canvas_label_active: Color32::from_rgb(15, 23, 42),
-            trigger_accent: Color32::from_rgb(217, 119, 6),
-            trigger_text: Color32::from_rgb(120, 53, 15),
         },
         GuiTheme::CatppuccinMocha => ThemePalette {
             dark_mode: true,
@@ -112,11 +186,9 @@ fn theme_palette(theme: GuiTheme) -> ThemePalette {
             success: Color32::from_rgb(166, 227, 161),
             error: Color32::from_rgb(243, 139, 168),
             canvas_bg: Color32::from_rgb(17, 17, 27),
-            canvas_grid: Color32::from_rgba_unmultiplied(166, 173, 200, 60),
+            canvas_grid: Color32::from_rgba_unmultiplied(166, 173, 200, 80),
             canvas_label: Color32::from_rgb(186, 194, 222),
             canvas_label_active: Color32::from_rgb(205, 214, 244),
-            trigger_accent: Color32::from_rgb(250, 179, 135),
-            trigger_text: Color32::from_rgb(249, 226, 175),
         },
         GuiTheme::CatppuccinMacchiato => ThemePalette {
             dark_mode: true,
@@ -135,11 +207,9 @@ fn theme_palette(theme: GuiTheme) -> ThemePalette {
             success: Color32::from_rgb(166, 218, 149),
             error: Color32::from_rgb(237, 135, 150),
             canvas_bg: Color32::from_rgb(24, 25, 38),
-            canvas_grid: Color32::from_rgba_unmultiplied(165, 173, 203, 60),
+            canvas_grid: Color32::from_rgba_unmultiplied(165, 173, 203, 80),
             canvas_label: Color32::from_rgb(184, 192, 224),
             canvas_label_active: Color32::from_rgb(202, 211, 245),
-            trigger_accent: Color32::from_rgb(245, 169, 127),
-            trigger_text: Color32::from_rgb(238, 212, 159),
         },
         GuiTheme::CatppuccinFrappe => ThemePalette {
             dark_mode: true,
@@ -158,11 +228,9 @@ fn theme_palette(theme: GuiTheme) -> ThemePalette {
             success: Color32::from_rgb(166, 209, 137),
             error: Color32::from_rgb(231, 130, 132),
             canvas_bg: Color32::from_rgb(35, 38, 52),
-            canvas_grid: Color32::from_rgba_unmultiplied(165, 173, 206, 60),
+            canvas_grid: Color32::from_rgba_unmultiplied(165, 173, 206, 80),
             canvas_label: Color32::from_rgb(181, 191, 226),
             canvas_label_active: Color32::from_rgb(198, 208, 245),
-            trigger_accent: Color32::from_rgb(239, 159, 118),
-            trigger_text: Color32::from_rgb(229, 200, 144),
         },
         GuiTheme::CatppuccinLatte => ThemePalette {
             dark_mode: false,
@@ -181,11 +249,9 @@ fn theme_palette(theme: GuiTheme) -> ThemePalette {
             success: Color32::from_rgb(64, 160, 43),
             error: Color32::from_rgb(210, 15, 57),
             canvas_bg: Color32::from_rgb(220, 224, 232),
-            canvas_grid: Color32::from_rgba_unmultiplied(108, 111, 133, 60),
+            canvas_grid: Color32::from_rgba_unmultiplied(108, 111, 133, 80),
             canvas_label: Color32::from_rgb(92, 95, 119),
             canvas_label_active: Color32::from_rgb(76, 79, 105),
-            trigger_accent: Color32::from_rgb(254, 100, 11),
-            trigger_text: Color32::from_rgb(124, 45, 18),
         },
         GuiTheme::Nord => ThemePalette {
             dark_mode: true,
@@ -204,11 +270,9 @@ fn theme_palette(theme: GuiTheme) -> ThemePalette {
             success: Color32::from_rgb(163, 190, 140),
             error: Color32::from_rgb(191, 97, 106),
             canvas_bg: Color32::from_rgb(36, 41, 51),
-            canvas_grid: Color32::from_rgba_unmultiplied(216, 222, 233, 55),
+            canvas_grid: Color32::from_rgba_unmultiplied(216, 222, 233, 75),
             canvas_label: Color32::from_rgb(216, 222, 233),
             canvas_label_active: Color32::from_rgb(236, 239, 244),
-            trigger_accent: Color32::from_rgb(208, 135, 112),
-            trigger_text: Color32::from_rgb(235, 203, 139),
         },
         GuiTheme::TokyoNight => ThemePalette {
             dark_mode: true,
@@ -227,11 +291,9 @@ fn theme_palette(theme: GuiTheme) -> ThemePalette {
             success: Color32::from_rgb(158, 206, 106),
             error: Color32::from_rgb(247, 118, 142),
             canvas_bg: Color32::from_rgb(22, 22, 30),
-            canvas_grid: Color32::from_rgba_unmultiplied(169, 177, 214, 55),
+            canvas_grid: Color32::from_rgba_unmultiplied(169, 177, 214, 75),
             canvas_label: Color32::from_rgb(169, 177, 214),
             canvas_label_active: Color32::from_rgb(192, 202, 245),
-            trigger_accent: Color32::from_rgb(255, 158, 100),
-            trigger_text: Color32::from_rgb(224, 175, 104),
         },
         GuiTheme::GruvboxDark => ThemePalette {
             dark_mode: true,
@@ -250,11 +312,9 @@ fn theme_palette(theme: GuiTheme) -> ThemePalette {
             success: Color32::from_rgb(184, 187, 38),
             error: Color32::from_rgb(251, 73, 52),
             canvas_bg: Color32::from_rgb(29, 32, 33),
-            canvas_grid: Color32::from_rgba_unmultiplied(213, 196, 161, 55),
+            canvas_grid: Color32::from_rgba_unmultiplied(213, 196, 161, 75),
             canvas_label: Color32::from_rgb(213, 196, 161),
             canvas_label_active: Color32::from_rgb(251, 241, 199),
-            trigger_accent: Color32::from_rgb(254, 128, 25),
-            trigger_text: Color32::from_rgb(250, 189, 47),
         },
         GuiTheme::SolarizedLight => ThemePalette {
             dark_mode: false,
@@ -273,11 +333,9 @@ fn theme_palette(theme: GuiTheme) -> ThemePalette {
             success: Color32::from_rgb(133, 153, 0),
             error: Color32::from_rgb(220, 50, 47),
             canvas_bg: Color32::from_rgb(238, 232, 213),
-            canvas_grid: Color32::from_rgba_unmultiplied(88, 110, 117, 55),
+            canvas_grid: Color32::from_rgba_unmultiplied(88, 110, 117, 75),
             canvas_label: Color32::from_rgb(88, 110, 117),
             canvas_label_active: Color32::from_rgb(7, 54, 66),
-            trigger_accent: Color32::from_rgb(203, 75, 22),
-            trigger_text: Color32::from_rgb(124, 45, 18),
         },
     }
 }
@@ -813,6 +871,31 @@ impl SettingsApp {
         );
         p.rect_filled(sample_rect, 0.0, fill);
         p.rect_stroke(sample_rect, 0.0, Stroke::new(2.0_f32, border));
+
+        let label = format!("{sample_c} \u{00D7} {sample_r}");
+        let galley = p.layout_no_wrap(
+            label,
+            egui::FontId::proportional(13.0),
+            palette.canvas_label_active,
+        );
+        let pill_size = galley.size() + Vec2::new(14.0, 8.0);
+        let pill_rect = EguiRect::from_center_size(sample_rect.center(), pill_size);
+        let pill_bg = Color32::from_rgba_unmultiplied(
+            palette.extreme_bg.r(),
+            palette.extreme_bg.g(),
+            palette.extreme_bg.b(),
+            232,
+        );
+        p.rect_filled(pill_rect, 5.0, pill_bg);
+        p.rect_stroke(pill_rect, 5.0, Stroke::new(1.5_f32, border));
+        p.galley(
+            Pos2::new(
+                pill_rect.center().x - galley.size().x * 0.5,
+                pill_rect.center().y - galley.size().y * 0.5,
+            ),
+            galley,
+            palette.canvas_label_active,
+        );
     }
 
     fn draw_custom_zones_editor(
@@ -934,7 +1017,7 @@ impl SettingsApp {
         });
 
         ui.label(
-            egui::RichText::new("Tip: Drag empty space to draw a zone, drag a zone to move it, or enable 'Custom Trigger Area' below to decouple the drop pad (amber) from the snapped size (blue).")
+            egui::RichText::new("Tip: Drag empty space to draw a zone, drag a zone to move it, or enable 'Custom Trigger Area' below to decouple the trigger pad from the snapped output.")
                 .small()
                 .weak(),
         );
@@ -1186,6 +1269,27 @@ impl SettingsApp {
         let palette = theme_palette(self.config.appearance.gui_theme);
         let p = ui.painter_at(canvas_rect);
         p.rect_filled(canvas_rect, 4.0, palette.canvas_bg);
+
+        // Subtle 4x4 alignment guides on the editor canvas
+        for step in 1..4 {
+            let frac = step as f32 / 4.0;
+            let gx = canvas_rect.left() + canvas_rect.width() * frac;
+            let gy = canvas_rect.top() + canvas_rect.height() * frac;
+            let guide_col = Color32::from_rgba_unmultiplied(
+                palette.canvas_grid.r(),
+                palette.canvas_grid.g(),
+                palette.canvas_grid.b(),
+                40,
+            );
+            p.line_segment(
+                [Pos2::new(gx, canvas_rect.top()), Pos2::new(gx, canvas_rect.bottom())],
+                Stroke::new(1.0_f32, guide_col),
+            );
+            p.line_segment(
+                [Pos2::new(canvas_rect.left(), gy), Pos2::new(canvas_rect.right(), gy)],
+                Stroke::new(1.0_f32, guide_col),
+            );
+        }
         p.rect_stroke(
             canvas_rect,
             4.0,
@@ -1194,67 +1298,157 @@ impl SettingsApp {
 
         let hi = self.config.appearance.highlight_color;
         let bd = self.config.appearance.border_color;
+        let tr_rgb = self.config.appearance.trigger_color;
+        let bd_col = Color32::from_rgb(bd[0], bd[1], bd[2]);
+        let tr_col = Color32::from_rgb(tr_rgb[0], tr_rgb[1], tr_rgb[2]);
+
+        let unsel_fill = if palette.dark_mode {
+            Color32::from_rgba_unmultiplied(
+                palette.widget_bg.r(),
+                palette.widget_bg.g(),
+                palette.widget_bg.b(),
+                120,
+            )
+        } else {
+            Color32::from_rgba_unmultiplied(
+                palette.surface_bg.r(),
+                palette.surface_bg.g(),
+                palette.surface_bg.b(),
+                150,
+            )
+        };
+        let sel_fill = Color32::from_rgba_unmultiplied(
+            hi[0],
+            hi[1],
+            hi[2],
+            if palette.dark_mode { 64 } else { 52 },
+        );
+
+        // Pass 1: Unselected zone bounds
+        for (i, z) in zones.iter().enumerate() {
+            if self.selected_zone_idx == Some(i) {
+                continue;
+            }
+            let sr = to_screen(z.bounds).shrink(2.0);
+            p.rect_filled(sr, 2.0, unsel_fill);
+            p.rect_stroke(sr, 2.0, Stroke::new(1.5_f32, palette.border));
+        }
+
+        // Pass 2: Selected zone bounds on top
+        if let Some(sel) = self.selected_zone_idx {
+            if let Some(z) = zones.get(sel) {
+                let sr = to_screen(z.bounds).shrink(2.0);
+                let bw = if self.zone_edit_target == ZoneEditTarget::Bounds {
+                    2.5_f32
+                } else {
+                    1.75_f32
+                };
+                p.rect_filled(sr, 2.0, sel_fill);
+                p.rect_stroke(sr, 2.0, Stroke::new(bw, bd_col));
+            }
+        }
+
+        // Collect trigger rects so bounds label pills avoid overlapping trigger pads
+        let trigger_rects: Vec<EguiRect> = zones
+            .iter()
+            .filter_map(|z| z.trigger.map(|tr| to_screen(tr).shrink(1.0)))
+            .collect();
+
+        // Pass 3: High-contrast zone bounds label pills with anti-collision placement
+        let mut placed_pills: Vec<EguiRect> = Vec::with_capacity(zones.len());
         for (i, z) in zones.iter().enumerate() {
             let sr = to_screen(z.bounds).shrink(2.0);
             let is_sel = self.selected_zone_idx == Some(i);
-            let fill = if is_sel {
-                Color32::from_rgba_unmultiplied(hi[0], hi[1], hi[2], 95)
-            } else {
-                Color32::from_rgba_unmultiplied(
-                    palette.muted_text.r(),
-                    palette.muted_text.g(),
-                    palette.muted_text.b(),
-                    36,
-                )
-            };
-            let stroke = if is_sel {
-                Stroke::new(2.0_f32, Color32::from_rgb(bd[0], bd[1], bd[2]))
-            } else {
-                Stroke::new(1.0_f32, palette.border)
-            };
-            p.rect_filled(sr, 2.0, fill);
-            p.rect_stroke(sr, 2.0, stroke);
-
             let pw = ((z.bounds[2] - z.bounds[0]) * mon_w as f32).round() as i32;
             let ph = ((z.bounds[3] - z.bounds[1]) * mon_h as f32).round() as i32;
             let label = format!("{}\n{}x{}", i + 1, pw, ph);
-            p.text(
-                sr.center(),
-                egui::Align2::CENTER_CENTER,
-                label,
-                egui::FontId::proportional(13.0),
-                if is_sel {
-                    palette.canvas_label_active
-                } else {
-                    palette.canvas_label
-                },
-            );
+            let text_col = if is_sel {
+                palette.canvas_label_active
+            } else {
+                palette.canvas_label
+            };
+            let galley = p.layout_no_wrap(label, egui::FontId::proportional(12.5), text_col);
+            let pill_size = galley.size() + Vec2::new(12.0, 6.0);
+            let center = pick_non_overlapping_center(sr, pill_size, &placed_pills, &trigger_rects);
+            let pill_rect = EguiRect::from_center_size(center, pill_size);
+            placed_pills.push(pill_rect);
 
-            if let Some(tr) = z.trigger {
+            let pill_bg = Color32::from_rgba_unmultiplied(
+                palette.extreme_bg.r(),
+                palette.extreme_bg.g(),
+                palette.extreme_bg.b(),
+                if is_sel { 238 } else { 225 },
+            );
+            let pill_border = if is_sel {
+                Stroke::new(1.5_f32, bd_col)
+            } else {
+                Stroke::new(1.0_f32, palette.border)
+            };
+            p.rect_filled(pill_rect, 4.0, pill_bg);
+            p.rect_stroke(pill_rect, 4.0, pill_border);
+            p.galley(
+                Pos2::new(
+                    pill_rect.center().x - galley.size().x * 0.5,
+                    pill_rect.center().y - galley.size().y * 0.5,
+                ),
+                galley,
+                text_col,
+            );
+        }
+
+        // Pass 4: Trigger pads (unselected first, then selected on top)
+        for pass_selected in [false, true] {
+            for (i, z) in zones.iter().enumerate() {
+                let is_sel = self.selected_zone_idx == Some(i);
+                if is_sel != pass_selected {
+                    continue;
+                }
+                let Some(tr) = z.trigger else {
+                    continue;
+                };
                 let tr_rect = to_screen(tr).shrink(1.0);
-                let tr_col = palette.trigger_accent;
                 let tr_fill = Color32::from_rgba_unmultiplied(
                     tr_col.r(),
                     tr_col.g(),
                     tr_col.b(),
-                    if is_sel { 85 } else { 52 },
+                    if is_sel { 88 } else { 54 },
                 );
+                let tr_stroke_w = if is_sel {
+                    if self.zone_edit_target == ZoneEditTarget::Trigger {
+                        2.75_f32
+                    } else {
+                        2.25_f32
+                    }
+                } else {
+                    1.75_f32
+                };
                 p.rect_filled(tr_rect, 2.0, tr_fill);
-                p.rect_stroke(
-                    tr_rect,
-                    2.0,
-                    Stroke::new(if is_sel { 2.0_f32 } else { 1.5_f32 }, tr_col),
-                );
-                p.text(
-                    tr_rect.center(),
-                    egui::Align2::CENTER_CENTER,
+                p.rect_stroke(tr_rect, 2.0, Stroke::new(tr_stroke_w, tr_col));
+
+                let badge_text_col = contrasting_text_color(tr_col);
+                let galley = p.layout_no_wrap(
                     format!("Trigger {}", i + 1),
                     egui::FontId::proportional(11.5),
-                    palette.trigger_text,
+                    badge_text_col,
+                );
+                let pill_size = galley.size() + Vec2::new(10.0, 5.0);
+                let pill_rect = EguiRect::from_center_size(tr_rect.center(), pill_size);
+                let pill_bg = Color32::from_rgba_unmultiplied(tr_col.r(), tr_col.g(), tr_col.b(), 235);
+                p.rect_filled(pill_rect, 4.0, pill_bg);
+                p.galley(
+                    Pos2::new(
+                        pill_rect.center().x - galley.size().x * 0.5,
+                        pill_rect.center().y - galley.size().y * 0.5,
+                    ),
+                    galley,
+                    badge_text_col,
                 );
             }
+        }
 
-            if is_sel {
+        // Pass 5: Resize handles always topmost for selected zone's active target
+        if let Some(sel) = self.selected_zone_idx {
+            if let Some(z) = zones.get(sel) {
                 let handle_rect = if self.zone_edit_target == ZoneEditTarget::Trigger {
                     z.trigger.unwrap_or(z.bounds)
                 } else {
@@ -1262,17 +1456,18 @@ impl SettingsApp {
                 };
                 let raw_sr = to_screen(handle_rect);
                 let handle_col = if self.zone_edit_target == ZoneEditTarget::Trigger {
-                    palette.trigger_accent
+                    tr_col
                 } else {
-                    Color32::from_rgb(bd[0], bd[1], bd[2])
+                    bd_col
                 };
                 for (_, hp) in handle_positions(raw_sr) {
                     p.circle_filled(hp, 5.0, Color32::WHITE);
-                    p.circle_stroke(hp, 5.0, Stroke::new(1.5_f32, handle_col));
+                    p.circle_stroke(hp, 5.0, Stroke::new(2.0_f32, handle_col));
                 }
             }
         }
 
+        // Pass 6: Drawing preview rect
         if let CanvasDrag::Drawing {
             start_norm,
             cur_norm,
@@ -1323,19 +1518,28 @@ impl SettingsApp {
                     }
                     if z.trigger.is_some() {
                         ui.separator();
-                        ui.selectable_value(
-                            &mut self.zone_edit_target,
-                            ZoneEditTarget::Bounds,
-                            "Snap Output (Blue)",
+                        paint_color_swatch(
+                            ui,
+                            Color32::from_rgba_unmultiplied(hi[0], hi[1], hi[2], 180),
+                            bd_col,
                         );
                         ui.selectable_value(
                             &mut self.zone_edit_target,
+                            ZoneEditTarget::Bounds,
+                            "Snap Output",
+                        );
+                        ui.add_space(4.0);
+                        paint_color_swatch(ui, tr_col, tr_col);
+                        ui.selectable_value(
+                            &mut self.zone_edit_target,
                             ZoneEditTarget::Trigger,
-                            "Trigger Box (Amber)",
+                            "Trigger Pad",
                         );
                     }
                 });
 
+                let is_trigger_target =
+                    self.zone_edit_target == ZoneEditTarget::Trigger && z.trigger.is_some();
                 let (tag, active_rect) = match (self.zone_edit_target, &mut z.trigger) {
                     (ZoneEditTarget::Trigger, Some(tr)) => ("Trigger:", tr),
                     _ => ("Output:", &mut z.bounds),
@@ -1345,6 +1549,15 @@ impl SettingsApp {
                     let max_y1 = active_rect[3] - 0.05;
                     let min_x2 = active_rect[0] + 0.05;
                     let min_y2 = active_rect[1] + 0.05;
+                    if is_trigger_target {
+                        paint_color_swatch(ui, tr_col, tr_col);
+                    } else {
+                        paint_color_swatch(
+                            ui,
+                            Color32::from_rgba_unmultiplied(hi[0], hi[1], hi[2], 180),
+                            bd_col,
+                        );
+                    }
                     ui.label(tag);
                     ui.label("X1");
                     ui.add(egui::DragValue::new(&mut active_rect[0]).speed(0.005).range(0.0..=max_x1));
@@ -1813,9 +2026,11 @@ impl SettingsApp {
                             self.config.appearance.gui_theme = quick_target;
                         }
                         if ui.button("Match Overlay Colors").clicked() {
-                            let (hi, bd) = self.config.appearance.gui_theme.recommended_overlay_rgb();
+                            let (hi, bd, tr) =
+                                self.config.appearance.gui_theme.recommended_overlay_colors();
                             self.config.appearance.highlight_color = hi;
                             self.config.appearance.border_color = bd;
+                            self.config.appearance.trigger_color = tr;
                         }
                     });
 
@@ -1857,13 +2072,16 @@ impl SettingsApp {
 
                 ui.add_space(8.0);
                 ui.group(|ui| {
-                    ui.label(egui::RichText::new("Overlay Visual Style").strong());
-                    ui.horizontal(|ui| {
-                        ui.label("Highlight Fill Color:");
+                    ui.label(egui::RichText::new("Overlay & Editor Colors").strong());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Zone Fill:");
                         ui.color_edit_button_srgb(&mut self.config.appearance.highlight_color);
-                        ui.add_space(20.0);
-                        ui.label("Border Color:");
+                        ui.add_space(12.0);
+                        ui.label("Zone Border:");
                         ui.color_edit_button_srgb(&mut self.config.appearance.border_color);
+                        ui.add_space(12.0);
+                        ui.label("Trigger Pad:");
+                        ui.color_edit_button_srgb(&mut self.config.appearance.trigger_color);
                     });
                     ui.horizontal(|ui| {
                         ui.label("Highlight Opacity:");
@@ -1877,6 +2095,13 @@ impl SettingsApp {
                         ui.add(egui::Slider::new(
                             &mut self.config.appearance.zone_bg_opacity,
                             0.0..=0.50,
+                        ));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Trigger Pad Opacity:");
+                        ui.add(egui::Slider::new(
+                            &mut self.config.appearance.trigger_opacity,
+                            0.05..=0.85,
                         ));
                     });
                 });
@@ -2137,6 +2362,21 @@ mod tests {
         for &theme in GuiTheme::ALL {
             let p = theme_palette(theme);
             assert_eq!(p.dark_mode, !theme.is_light(), "mismatch for {:?}", theme);
+            let (hi, _bd, tr) = theme.recommended_overlay_colors();
+            assert_ne!(hi, tr, "highlight and trigger should differ for {:?}", theme);
         }
+    }
+
+    #[test]
+    fn contrasting_text_color_picks_dark_on_bright_and_white_on_dark() {
+        let dark = Color32::from_rgb(15, 23, 42);
+        assert_eq!(contrasting_text_color(Color32::WHITE), dark);
+        assert_eq!(contrasting_text_color(Color32::from_rgb(245, 158, 11)), dark);
+        assert_eq!(contrasting_text_color(Color32::from_rgb(250, 179, 135)), dark);
+        assert_eq!(contrasting_text_color(Color32::from_rgb(250, 189, 47)), dark);
+
+        assert_eq!(contrasting_text_color(Color32::BLACK), Color32::WHITE);
+        assert_eq!(contrasting_text_color(Color32::from_rgb(15, 23, 42)), Color32::WHITE);
+        assert_eq!(contrasting_text_color(Color32::from_rgb(203, 75, 22)), Color32::WHITE);
     }
 }

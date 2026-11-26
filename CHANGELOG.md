@@ -2,6 +2,19 @@
 
 All notable changes to ZoneSnap are documented in this file.
 
+## [v1.2.0] - 2026-11-26
+
+### Added
+- **Configurable Trigger Pad Colors & Opacity:** Added `trigger_color` and `trigger_opacity` to `OverlayStyle` (`zones.json` and **Appearance & Behavior → Overlay & Editor Colors**) so decoupled trigger/launchpad pads can be themed in both the Zone Editor and live overlay.
+- **Full Theme Color Matching:** **Match Overlay Colors** now updates Zone Fill, Zone Border, and Trigger Pad colors together across all 10 built-in themes.
+- **Live Color Swatch Icons:** Replaced hardcoded "(Blue)" / "(Amber)" labels in the Zone Editor with live color swatch icons beside **Snap Output**, **Trigger Pad**, and the coordinate controls.
+
+### Changed
+- **Zone Editor Readability Overhaul:** Rebuilt the Custom Zones and Dynamic Grid canvas rendering for crisp contrast across all light and dark themes—added subtle 4×4 alignment guides, distinct selected vs. unselected fills, high-contrast rounded label pills with anti-collision placement, luminance-aware `Trigger N` badges, and topmost resize handles.
+- **Documentation:** Updated `docs/` screenshots to match the refreshed editor theming and documented `trigger_color` / `trigger_opacity` in `README.md`.
+
+---
+
 ## [v1.1.0] - 2026-11-26
 
 ### Added
