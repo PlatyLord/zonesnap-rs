@@ -51,7 +51,8 @@ Drop `zonesnap.exe` into any folder (even a USB drive) and run it—no installer
 
 - **Dynamic Grid (`cols × rows`, default `12 × 6`):** The cell under your cursor when the overlay opens becomes the anchor cell. Moving the mouse spans a rectangle from the anchor cell to your current cell, displaying the live span size (e.g. `6 × 3`).
 - **Custom Zones:** Displays your defined zone rectangles (`1`, `2`, `3`, ...).
-  - **Shared-Border Merge:** Move your cursor within `16px` of a shared border between adjacent zones to automatically merge them into their combined bounding box.
+  - **Custom Trigger Areas (Decoupled Drop Target vs. Snap Size):** Any custom zone can define a compact **Trigger** box separate from its full **Snap Output** bounds. For example, place a small Center Focus drop pad (`trigger`) in the middle of the screen over Left/Right side columns (`bounds`), so dragging near the center-left or center-right still cleanly hits the side columns while dropping onto the center pad snaps to the full centered focus window.
+  - **Shared-Border Merge:** Move your cursor within `16px` of a shared border between adjacent standard zones to automatically merge them into their combined bounding box.
   - **Multi-Zone `Shift` Merge:** Hold **`Shift`** and sweep across multiple zones to merge all of them together.
 
 ### 4. Scroll-Wheel Layout Cycling & Monitor Lock
@@ -94,9 +95,9 @@ When a window is snapped by ZoneSnap, its pre-snap position and size are cached 
 - **Visual Zone Editor (`Layouts & Visual Zone Editor` tab):**
   - Pick any connected or saved monitor profile.
   - Select a layout to edit and activate it, **+ Add Layout**, **Duplicate** an existing layout, **Copy to Monitor...** (great for mixed-resolution setups), or **Delete Layout**.
-  - Switch between **Dynamic Grid** (adjusting columns `2–24` and rows `2–16`) and **Custom Zones** (drag empty space to draw zones, drag to move, drag 8 corner/edge handles to resize, **Split V/H**, apply **2 Cols / 3 Cols / 2×2 / Focus+Stack** presets, or fine-tune normalized coordinates).
-- **Hotkeys & Modifiers tab:** Rebind `Win + Alt + Z`, `Win + Alt + E`, the Move/Resize modifier, and the Monitor-Lock modifier.
-- **Appearance & Behavior tab:** Customize highlight/border colors and opacities, toggle unsnap size restoration, and manage the `excluded_apps` process blacklist.
+  - Switch between **Dynamic Grid** (adjusting columns `2–24` and rows `2–16`) and **Custom Zones** (drag empty space to draw zones, drag to move, drag 8 corner/edge handles to resize, enable **Custom Trigger Area** to decouple amber trigger pads from blue snap bounds, **Split V/H**, apply **2 Cols / 3 Cols / 2×2 / Focus+Stack / Center Focus + Sides** presets, or fine-tune normalized coordinates).
+- **Shortcuts & Modifiers tab:** Rebind `Win + Alt + Z`, `Win + Alt + E`, the Move/Resize modifier, Monitor-Lock modifier, and Nearest-Corner Resize modifier, plus view the live **Complete Controls & Shortcuts Reference**.
+- **Appearance & Behavior tab:** Customize highlight/border colors and opacities, adjust **Settings Window Text Scale** (`85%–175%`, or `Ctrl +`/`-`/`0`), toggle unsnap size restoration and drag-to-top maximize, and manage the `excluded_apps` process blacklist.
 
 ---
 
@@ -118,7 +119,8 @@ When a window is snapped by ZoneSnap, its pre-snap position and size are cached 
     "highlight_color": [56, 189, 248],
     "highlight_opacity": 0.35,
     "border_color": [56, 189, 248],
-    "zone_bg_opacity": 0.14
+    "zone_bg_opacity": 0.14,
+    "gui_scale": 1.0
   },
   "behavior": {
     "restore_on_unsnap": true,
@@ -148,9 +150,12 @@ When a window is snapped by ZoneSnap, its pre-snap position and size are cached 
           "mode": {
             "type": "custom_zones",
             "zones": [
-              [0.0, 0.0, 0.33333334, 1.0],
-              [0.33333334, 0.0, 0.6666667, 1.0],
-              [0.6666667, 0.0, 1.0, 1.0]
+              [0.0, 0.0, 0.5, 1.0],
+              [0.5, 0.0, 1.0, 1.0],
+              {
+                "bounds": [0.15, 0.0, 0.85, 1.0],
+                "trigger": [0.42, 0.25, 0.58, 0.75]
+              }
             ]
           }
         }
@@ -168,6 +173,7 @@ When a window is snapped by ZoneSnap, its pre-snap position and size are cached 
 | `appearance` | `highlight_opacity`     | `0.35`                           | Opacity of active zone fill (`0.05`–`0.85`)                                                  |
 | `appearance` | `border_color`          | `[56, 189, 248]`                 | RGB border color of active zone outline                                                      |
 | `appearance` | `zone_bg_opacity`       | `0.14`                           | Opacity of inactive custom zone cards (`0.0`–`0.50`)                                         |
+| `appearance` | `gui_scale`             | `1.0`                            | Settings GUI text/UI scale multiplier (`0.85`–`1.75`, on top of Windows DPI scaling)         |
 | `behavior`   | `restore_on_unsnap`     | `true`                           | Restore original window size when dragged away                                               |
 | `behavior`   | `drag_top_maximize`     | `true`                           | Maximize window when `Alt + Left-Drag` reaches the top edge of a monitor                     |
 | `behavior`   | `excluded_apps`         | `["mstsc.exe", "vmconnect.exe"]` | Lowercase executable names where mouse hooks pass through untouched                          |

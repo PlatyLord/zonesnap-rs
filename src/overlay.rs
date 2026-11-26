@@ -1,4 +1,4 @@
-use crate::config::{Layout, LayoutMode, OverlayStyle};
+use crate::config::{CustomZone, Layout, LayoutMode, OverlayStyle};
 use crate::monitor::Rect;
 use std::collections::HashSet;
 use std::ffi::c_void;
@@ -106,24 +106,44 @@ fn is_near_zone_border(r: Rect, x: i32, y: i32, thresh: i32) -> bool {
 }
 
 /// Hit-test normalized custom zones at `(x, y)`.
-/// If `(x, y)` sits within `border_threshold_px` of a shared border between 2+ zones, returns all bordering zones.
-/// Otherwise returns the smallest-area zone containing `(x, y)`.
+/// Priority:
+/// 1. Zones with an explicit `trigger` area containing `(x, y)` (smallest trigger area wins, no border-merge).
+/// 2. Standard zones within `border_threshold_px` of a shared border (2+ bordering zones merge).
+/// 3. Smallest-area standard zone containing `(x, y)`.
 pub fn hit_test_custom_zones(
     work: Rect,
-    zones: &[[f32; 4]],
+    zones: &[CustomZone],
     x: i32,
     y: i32,
     border_threshold_px: i32,
 ) -> Vec<usize> {
-    let px_rects: Vec<Rect> = zones
+    let mut best_trigger: Option<(usize, i64)> = None;
+    for (i, z) in zones.iter().enumerate() {
+        if z.has_custom_trigger() {
+            let tr = custom_zone_pixel_rect(work, z.effective_trigger());
+            if tr.contains(x, y) {
+                let area = tr.width() as i64 * tr.height() as i64;
+                if best_trigger.map(|(_, a)| area < a).unwrap_or(true) {
+                    best_trigger = Some((i, area));
+                }
+            }
+        }
+    }
+    if let Some((idx, _)) = best_trigger {
+        return vec![idx];
+    }
+
+    let std_rects: Vec<(usize, Rect)> = zones
         .iter()
-        .map(|z| custom_zone_pixel_rect(work, *z))
+        .enumerate()
+        .filter(|(_, z)| !z.has_custom_trigger())
+        .map(|(i, z)| (i, custom_zone_pixel_rect(work, z.bounds)))
         .collect();
 
     if border_threshold_px > 0 {
         let mut bordering: Vec<usize> = Vec::new();
-        for (i, r) in px_rects.iter().enumerate() {
-            if is_near_zone_border(*r, x, y, border_threshold_px) {
+        for &(i, r) in &std_rects {
+            if is_near_zone_border(r, x, y, border_threshold_px) {
                 bordering.push(i);
             }
         }
@@ -133,7 +153,7 @@ pub fn hit_test_custom_zones(
     }
 
     let mut best: Option<(usize, i64)> = None;
-    for (i, r) in px_rects.iter().enumerate() {
+    for &(i, r) in &std_rects {
         if r.contains(x, y) {
             let area = r.width() as i64 * r.height() as i64;
             if best.map(|(_, a)| area < a).unwrap_or(true) {
@@ -856,7 +876,10 @@ fn paint_base_layer(
         LayoutMode::CustomZones { zones } => {
             const GAP: i32 = 4;
             for (idx, z) in zones.iter().enumerate() {
-                let pxr = custom_zone_pixel_rect(work, *z);
+                if z.has_custom_trigger() {
+                    continue;
+                }
+                let pxr = custom_zone_pixel_rect(work, z.bounds);
                 let rx = pxr.left - work.left + GAP;
                 let ry = pxr.top - work.top + GAP;
                 let rw = (pxr.width() - GAP * 2).max(4);
@@ -879,6 +902,36 @@ fn paint_base_layer(
                     &num,
                     22,
                     [203, 213, 225],
+                );
+            }
+            // Draw custom trigger drop pads on top so they sit cleanly above underlying columns
+            for (idx, z) in zones.iter().enumerate() {
+                if !z.has_custom_trigger() {
+                    continue;
+                }
+                let pxr = custom_zone_pixel_rect(work, z.effective_trigger());
+                let rx = pxr.left - work.left + GAP;
+                let ry = pxr.top - work.top + GAP;
+                let rw = (pxr.width() - GAP * 2).max(4);
+                let rh = (pxr.height() - GAP * 2).max(4);
+
+                fill_rect(buf, w, h, rx, ry, rw, rh, 245, 158, 11, 56);
+                stroke_rect(buf, w, h, rx, ry, rw, rh, 2, 251, 191, 36, 180);
+
+                let num = format!("{}", idx + 1);
+                let badge_w = 48.min(rw);
+                let badge_h = 36.min(rh);
+                draw_aa_text_on_bgra(
+                    buf,
+                    w,
+                    h,
+                    rx + (rw - badge_w) / 2,
+                    ry + (rh - badge_h) / 2,
+                    badge_w,
+                    badge_h,
+                    &num,
+                    22,
+                    [254, 243, 199],
                 );
             }
         }
@@ -930,7 +983,7 @@ fn paint_dynamic_layer(buf: &mut [u32], w: i32, h: i32, state: &OverlayRenderSta
                 let Some(z) = zones.get(idx) else {
                     continue;
                 };
-                let pxr = custom_zone_pixel_rect(state.work, *z);
+                let pxr = custom_zone_pixel_rect(state.work, z.bounds);
                 let rx = pxr.left - state.work.left + GAP;
                 let ry = pxr.top - state.work.top + GAP;
                 let rw = (pxr.width() - GAP * 2).max(4);
@@ -938,6 +991,15 @@ fn paint_dynamic_layer(buf: &mut [u32], w: i32, h: i32, state: &OverlayRenderSta
 
                 fill_rect(buf, w, h, rx, ry, rw, rh, hi[0], hi[1], hi[2], hi_a);
                 stroke_rect(buf, w, h, rx, ry, rw, rh, 2, bd[0], bd[1], bd[2], 220);
+
+                if z.has_custom_trigger() {
+                    let tpx = custom_zone_pixel_rect(state.work, z.effective_trigger());
+                    let tx = tpx.left - state.work.left + GAP;
+                    let ty = tpx.top - state.work.top + GAP;
+                    let tw = (tpx.width() - GAP * 2).max(4);
+                    let th = (tpx.height() - GAP * 2).max(4);
+                    stroke_rect(buf, w, h, tx, ty, tw, th, 2, 251, 191, 36, 220);
+                }
 
                 let num = format!("{}", idx + 1);
                 let badge_w = 48.min(rw);
@@ -1049,7 +1111,10 @@ mod tests {
             right: 1000,
             bottom: 1000,
         };
-        let zones = vec![[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 1.0, 1.0]];
+        let zones = vec![
+            CustomZone::simple([0.0, 0.0, 0.5, 1.0]),
+            CustomZone::simple([0.5, 0.0, 1.0, 1.0]),
+        ];
 
         assert_eq!(hit_test_custom_zones(work, &zones, 250, 500, 16), vec![0]);
         assert_eq!(hit_test_custom_zones(work, &zones, 750, 500, 16), vec![1]);
@@ -1058,8 +1123,39 @@ mod tests {
             vec![0, 1]
         );
 
-        let r0 = custom_zone_pixel_rect(work, zones[0]);
-        let r1 = custom_zone_pixel_rect(work, zones[1]);
+        let r0 = custom_zone_pixel_rect(work, zones[0].bounds);
+        let r1 = custom_zone_pixel_rect(work, zones[1].bounds);
         assert_eq!(union_rects(&[r0, r1]), Some(work));
+    }
+
+    #[test]
+    fn custom_trigger_zone_takes_priority_without_stealing_sides() {
+        let work = Rect {
+            left: 0,
+            top: 0,
+            right: 1000,
+            bottom: 1000,
+        };
+        let zones = vec![
+            CustomZone::simple([0.0, 0.0, 0.5, 1.0]),
+            CustomZone::simple([0.5, 0.0, 1.0, 1.0]),
+            CustomZone::with_trigger([0.15, 0.0, 0.85, 1.0], [0.42, 0.25, 0.58, 0.75]),
+        ];
+
+        // Inside Center Focus output bounds (0.15..0.85), outside its trigger -> hits Left (0)
+        assert_eq!(hit_test_custom_zones(work, &zones, 350, 500, 16), vec![0]);
+        // Inside Center Focus trigger -> hits Center Focus (2) cleanly with no border-merge
+        assert_eq!(hit_test_custom_zones(work, &zones, 500, 500, 16), vec![2]);
+        assert_eq!(
+            custom_zone_pixel_rect(work, zones[2].bounds),
+            Rect {
+                left: 150,
+                top: 0,
+                right: 850,
+                bottom: 1000
+            }
+        );
+        // Inside Right column -> hits Right (1)
+        assert_eq!(hit_test_custom_zones(work, &zones, 650, 500, 16), vec![1]);
     }
 }

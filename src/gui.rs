@@ -1,4 +1,4 @@
-use crate::config::{config_path, Config, Layout, LayoutMode};
+use crate::config::{config_path, Config, CustomZone, Layout, LayoutMode};
 use crate::hotkeys::HotkeySpec;
 use crate::monitor::{enumerate_monitors, MonitorInfo};
 use eframe::egui::{self, Color32, Pos2, Rect as EguiRect, Sense, Stroke, Vec2};
@@ -43,12 +43,31 @@ enum ResizeHandle {
     W,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZoneEditTarget {
+    Bounds,
+    Trigger,
+}
+
 #[derive(Debug, Clone)]
 enum CanvasDrag {
     None,
-    Drawing { start_norm: [f32; 2], cur_norm: [f32; 2] },
-    Moving { idx: usize, grab_offset: [f32; 2], orig: [f32; 4] },
-    Resizing { idx: usize, handle: ResizeHandle, orig: [f32; 4] },
+    Drawing {
+        start_norm: [f32; 2],
+        cur_norm: [f32; 2],
+    },
+    Moving {
+        idx: usize,
+        target: ZoneEditTarget,
+        grab_offset: [f32; 2],
+        orig: [f32; 4],
+    },
+    Resizing {
+        idx: usize,
+        target: ZoneEditTarget,
+        handle: ResizeHandle,
+        orig: [f32; 4],
+    },
 }
 
 struct SettingsApp {
@@ -58,6 +77,7 @@ struct SettingsApp {
     selected_monitor_key: String,
     selected_layout_idx: usize,
     selected_zone_idx: Option<usize>,
+    zone_edit_target: ZoneEditTarget,
     canvas_drag: CanvasDrag,
     snap_1pct: bool,
     tab: SettingsTab,
@@ -91,6 +111,7 @@ impl SettingsApp {
             selected_monitor_key,
             selected_layout_idx,
             selected_zone_idx: Some(0),
+            zone_edit_target: ZoneEditTarget::Bounds,
             canvas_drag: CanvasDrag::None,
             snap_1pct: true,
             tab: SettingsTab::Layouts,
@@ -257,7 +278,10 @@ impl SettingsApp {
                     prof.layouts.push(Layout {
                         name: format!("Custom Layout {n}"),
                         mode: LayoutMode::CustomZones {
-                            zones: vec![[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 1.0, 1.0]],
+                            zones: vec![
+                                CustomZone::simple([0.0, 0.0, 0.5, 1.0]),
+                                CustomZone::simple([0.5, 0.0, 1.0, 1.0]),
+                            ],
                         },
                     });
                     let new_idx = prof.layouts.len() - 1;
@@ -308,7 +332,10 @@ impl SettingsApp {
             }
             if ui.radio(!is_grid, "Custom Zones").clicked() && is_grid {
                 prof.layouts[sel_idx].mode = LayoutMode::CustomZones {
-                    zones: vec![[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 1.0, 1.0]],
+                    zones: vec![
+                        CustomZone::simple([0.0, 0.0, 0.5, 1.0]),
+                        CustomZone::simple([0.5, 0.0, 1.0, 1.0]),
+                    ],
                 };
                 self.selected_zone_idx = Some(0);
             }
@@ -462,7 +489,7 @@ impl SettingsApp {
         ui: &mut egui::Ui,
         mon_w: i32,
         mon_h: i32,
-        zones: &mut Vec<[f32; 4]>,
+        zones: &mut Vec<CustomZone>,
     ) {
         if let Some(idx) = self.selected_zone_idx {
             if idx >= zones.len() {
@@ -472,10 +499,19 @@ impl SettingsApp {
             self.selected_zone_idx = Some(0);
         }
 
+        if let Some(idx) = self.selected_zone_idx {
+            if let Some(z) = zones.get(idx) {
+                if !z.has_custom_trigger() {
+                    self.zone_edit_target = ZoneEditTarget::Bounds;
+                }
+            }
+        }
+
         ui.horizontal_wrapped(|ui| {
             if ui.button("Add Zone").clicked() {
-                zones.push([0.1, 0.1, 0.5, 0.5]);
+                zones.push(CustomZone::simple([0.1, 0.1, 0.5, 0.5]));
                 self.selected_zone_idx = Some(zones.len() - 1);
+                self.zone_edit_target = ZoneEditTarget::Bounds;
             }
             let has_sel = self.selected_zone_idx.is_some();
             if ui
@@ -483,10 +519,11 @@ impl SettingsApp {
                 .clicked()
             {
                 if let Some(idx) = self.selected_zone_idx {
-                    let z = zones[idx];
-                    let mid_x = (z[0] + z[2]) * 0.5;
-                    zones[idx] = [z[0], z[1], mid_x, z[3]];
-                    zones.insert(idx + 1, [mid_x, z[1], z[2], z[3]]);
+                    let b = zones[idx].bounds;
+                    let mid_x = (b[0] + b[2]) * 0.5;
+                    zones[idx] = CustomZone::simple([b[0], b[1], mid_x, b[3]]);
+                    zones.insert(idx + 1, CustomZone::simple([mid_x, b[1], b[2], b[3]]));
+                    self.zone_edit_target = ZoneEditTarget::Bounds;
                 }
             }
             if ui
@@ -494,10 +531,11 @@ impl SettingsApp {
                 .clicked()
             {
                 if let Some(idx) = self.selected_zone_idx {
-                    let z = zones[idx];
-                    let mid_y = (z[1] + z[3]) * 0.5;
-                    zones[idx] = [z[0], z[1], z[2], mid_y];
-                    zones.insert(idx + 1, [z[0], mid_y, z[2], z[3]]);
+                    let b = zones[idx].bounds;
+                    let mid_y = (b[1] + b[3]) * 0.5;
+                    zones[idx] = CustomZone::simple([b[0], b[1], b[2], mid_y]);
+                    zones.insert(idx + 1, CustomZone::simple([b[0], mid_y, b[2], b[3]]));
+                    self.zone_edit_target = ZoneEditTarget::Bounds;
                 }
             }
             if ui
@@ -511,51 +549,68 @@ impl SettingsApp {
                     } else {
                         Some(idx.min(zones.len() - 1))
                     };
+                    self.zone_edit_target = ZoneEditTarget::Bounds;
                 }
             }
             ui.separator();
             ui.label("Presets:");
             if ui.button("2 Cols").clicked() {
-                *zones = vec![[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 1.0, 1.0]];
+                *zones = vec![
+                    CustomZone::simple([0.0, 0.0, 0.5, 1.0]),
+                    CustomZone::simple([0.5, 0.0, 1.0, 1.0]),
+                ];
                 self.selected_zone_idx = Some(0);
+                self.zone_edit_target = ZoneEditTarget::Bounds;
             }
             if ui.button("3 Cols").clicked() {
                 *zones = vec![
-                    [0.0, 0.0, 1.0 / 3.0, 1.0],
-                    [1.0 / 3.0, 0.0, 2.0 / 3.0, 1.0],
-                    [2.0 / 3.0, 0.0, 1.0, 1.0],
+                    CustomZone::simple([0.0, 0.0, 1.0 / 3.0, 1.0]),
+                    CustomZone::simple([1.0 / 3.0, 0.0, 2.0 / 3.0, 1.0]),
+                    CustomZone::simple([2.0 / 3.0, 0.0, 1.0, 1.0]),
                 ];
                 self.selected_zone_idx = Some(0);
+                self.zone_edit_target = ZoneEditTarget::Bounds;
             }
             if ui.button("2x2").clicked() {
                 *zones = vec![
-                    [0.0, 0.0, 0.5, 0.5],
-                    [0.5, 0.0, 1.0, 0.5],
-                    [0.0, 0.5, 0.5, 1.0],
-                    [0.5, 0.5, 1.0, 1.0],
+                    CustomZone::simple([0.0, 0.0, 0.5, 0.5]),
+                    CustomZone::simple([0.5, 0.0, 1.0, 0.5]),
+                    CustomZone::simple([0.0, 0.5, 0.5, 1.0]),
+                    CustomZone::simple([0.5, 0.5, 1.0, 1.0]),
                 ];
                 self.selected_zone_idx = Some(0);
+                self.zone_edit_target = ZoneEditTarget::Bounds;
             }
             if ui.button("Focus+Stack").clicked() {
                 *zones = vec![
-                    [0.0, 0.0, 0.65, 1.0],
-                    [0.65, 0.0, 1.0, 0.5],
-                    [0.65, 0.5, 1.0, 1.0],
+                    CustomZone::simple([0.0, 0.0, 0.65, 1.0]),
+                    CustomZone::simple([0.65, 0.0, 1.0, 0.5]),
+                    CustomZone::simple([0.65, 0.5, 1.0, 1.0]),
                 ];
                 self.selected_zone_idx = Some(0);
+                self.zone_edit_target = ZoneEditTarget::Bounds;
+            }
+            if ui.button("Center Focus + Sides").clicked() {
+                *zones = vec![
+                    CustomZone::simple([0.0, 0.0, 0.5, 1.0]),
+                    CustomZone::simple([0.5, 0.0, 1.0, 1.0]),
+                    CustomZone::with_trigger([0.15, 0.0, 0.85, 1.0], [0.42, 0.25, 0.58, 0.75]),
+                ];
+                self.selected_zone_idx = Some(2);
+                self.zone_edit_target = ZoneEditTarget::Trigger;
             }
             ui.checkbox(&mut self.snap_1pct, "Snap 1%");
         });
 
         ui.label(
-            egui::RichText::new("Tip: Drag empty space to draw a zone, drag a zone to move it, or drag its handles to resize.")
+            egui::RichText::new("Tip: Drag empty space to draw a zone, drag a zone to move it, or enable 'Custom Trigger Area' below to decouple the drop pad (amber) from the snapped size (blue).")
                 .small()
                 .weak(),
         );
 
         let aspect = (mon_w.max(1) as f32) / (mon_h.max(1) as f32);
         let avail = ui.available_size();
-        let max_h = (avail.y - 68.0).max(200.0);
+        let max_h = (avail.y - 96.0).max(190.0);
         let mut cw = avail.x.min(max_h * aspect);
         let mut ch = cw / aspect;
         if ch > max_h {
@@ -593,18 +648,59 @@ impl SettingsApp {
             ]
         };
 
+        let pick_zone_at = |zones: &[CustomZone], pos: Pos2| -> Option<(usize, ZoneEditTarget)> {
+            // Check explicit trigger boxes first so compact center pads can be clicked over wide columns
+            let mut trig_hit: Option<(usize, f32)> = None;
+            for (i, z) in zones.iter().enumerate() {
+                if let Some(tr) = z.trigger {
+                    let sr = to_screen(tr);
+                    if sr.contains(pos) {
+                        let area = sr.width() * sr.height();
+                        if trig_hit.map(|(_, a)| area < a).unwrap_or(true) {
+                            trig_hit = Some((i, area));
+                        }
+                    }
+                }
+            }
+            if let Some((idx, _)) = trig_hit {
+                return Some((idx, ZoneEditTarget::Trigger));
+            }
+            let mut hit: Option<(usize, f32)> = None;
+            for (i, z) in zones.iter().enumerate() {
+                let sr = to_screen(z.bounds);
+                if sr.contains(pos) {
+                    let area = sr.width() * sr.height();
+                    if hit.map(|(_, a)| area < a).unwrap_or(true) {
+                        hit = Some((i, area));
+                    }
+                }
+            }
+            hit.map(|(idx, _)| (idx, ZoneEditTarget::Bounds))
+        };
+
         if resp.drag_started() {
             if let Some(pos) = resp.interact_pointer_pos() {
                 let mut started = false;
                 if let Some(sel) = self.selected_zone_idx {
-                    if let Some(&z) = zones.get(sel) {
-                        let sr = to_screen(z);
+                    if let Some(z) = zones.get(sel) {
+                        let (target, rect_norm) =
+                            if self.zone_edit_target == ZoneEditTarget::Trigger {
+                                if let Some(tr) = z.trigger {
+                                    (ZoneEditTarget::Trigger, tr)
+                                } else {
+                                    (ZoneEditTarget::Bounds, z.bounds)
+                                }
+                            } else {
+                                (ZoneEditTarget::Bounds, z.bounds)
+                            };
+                        let sr = to_screen(rect_norm);
                         for (h, hp) in handle_positions(sr) {
                             if pos.distance(hp) <= 10.0 {
                                 self.canvas_drag = CanvasDrag::Resizing {
                                     idx: sel,
+                                    target,
                                     handle: h,
-                                    orig: z,
+                                    orig: rect_norm,
                                 };
                                 started = true;
                                 break;
@@ -613,25 +709,19 @@ impl SettingsApp {
                     }
                 }
                 if !started {
-                    // Check if pointer clicked inside an existing zone (prefer smallest area)
-                    let mut hit: Option<(usize, f32)> = None;
-                    for (i, z) in zones.iter().enumerate() {
-                        let sr = to_screen(*z);
-                        if sr.contains(pos) {
-                            let area = sr.width() * sr.height();
-                            if hit.map(|(_, a)| area < a).unwrap_or(true) {
-                                hit = Some((i, area));
-                            }
-                        }
-                    }
-                    if let Some((idx, _)) = hit {
+                    if let Some((idx, target)) = pick_zone_at(zones, pos) {
                         self.selected_zone_idx = Some(idx);
+                        self.zone_edit_target = target;
                         let n = to_norm(pos);
-                        let z = zones[idx];
+                        let orig = match target {
+                            ZoneEditTarget::Trigger => zones[idx].effective_trigger(),
+                            ZoneEditTarget::Bounds => zones[idx].bounds,
+                        };
                         self.canvas_drag = CanvasDrag::Moving {
                             idx,
-                            grab_offset: [n[0] - z[0], n[1] - z[1]],
-                            orig: z,
+                            target,
+                            grab_offset: [n[0] - orig[0], n[1] - orig[1]],
+                            orig,
                         };
                     } else {
                         let n = to_norm(pos);
@@ -644,18 +734,9 @@ impl SettingsApp {
             }
         } else if resp.clicked() {
             if let Some(pos) = resp.interact_pointer_pos() {
-                let mut hit: Option<(usize, f32)> = None;
-                for (i, z) in zones.iter().enumerate() {
-                    let sr = to_screen(*z);
-                    if sr.contains(pos) {
-                        let area = sr.width() * sr.height();
-                        if hit.map(|(_, a)| area < a).unwrap_or(true) {
-                            hit = Some((i, area));
-                        }
-                    }
-                }
-                if let Some((idx, _)) = hit {
+                if let Some((idx, target)) = pick_zone_at(zones, pos) {
                     self.selected_zone_idx = Some(idx);
+                    self.zone_edit_target = target;
                 }
             }
         }
@@ -678,20 +759,32 @@ impl SettingsApp {
                     }
                     CanvasDrag::Moving {
                         idx,
+                        target,
                         grab_offset,
                         orig,
                     } => {
                         let i = *idx;
+                        let tgt = *target;
                         let w = orig[2] - orig[0];
                         let h = orig[3] - orig[1];
                         let nx1 = snap((cur[0] - grab_offset[0]).clamp(0.0, 1.0 - w));
                         let ny1 = snap((cur[1] - grab_offset[1]).clamp(0.0, 1.0 - h));
+                        let next_rect = [nx1, ny1, (nx1 + w).min(1.0), (ny1 + h).min(1.0)];
                         if let Some(z) = zones.get_mut(i) {
-                            *z = [nx1, ny1, (nx1 + w).min(1.0), (ny1 + h).min(1.0)];
+                            match tgt {
+                                ZoneEditTarget::Bounds => z.bounds = next_rect,
+                                ZoneEditTarget::Trigger => z.trigger = Some(next_rect),
+                            }
                         }
                     }
-                    CanvasDrag::Resizing { idx, handle, orig } => {
+                    CanvasDrag::Resizing {
+                        idx,
+                        target,
+                        handle,
+                        orig,
+                    } => {
                         let i = *idx;
+                        let tgt = *target;
                         let handle = *handle;
                         let mut r = *orig;
                         let sx = snap(cur[0]);
@@ -728,7 +821,10 @@ impl SettingsApp {
                             }
                         }
                         if let Some(z) = zones.get_mut(i) {
-                            *z = r;
+                            match tgt {
+                                ZoneEditTarget::Bounds => z.bounds = r,
+                                ZoneEditTarget::Trigger => z.trigger = Some(r),
+                            }
                         }
                     }
                     CanvasDrag::None => {}
@@ -747,8 +843,9 @@ impl SettingsApp {
                 let x2 = self.snap_val(start_norm[0].max(cur_norm[0]));
                 let y2 = self.snap_val(start_norm[1].max(cur_norm[1]));
                 if (x2 - x1) >= 0.05 && (y2 - y1) >= 0.05 {
-                    zones.push([x1, y1, x2, y2]);
+                    zones.push(CustomZone::simple([x1, y1, x2, y2]));
                     self.selected_zone_idx = Some(zones.len() - 1);
+                    self.zone_edit_target = ZoneEditTarget::Bounds;
                 }
             }
             self.canvas_drag = CanvasDrag::None;
@@ -766,7 +863,7 @@ impl SettingsApp {
         let hi = self.config.appearance.highlight_color;
         let bd = self.config.appearance.border_color;
         for (i, z) in zones.iter().enumerate() {
-            let sr = to_screen(*z).shrink(2.0);
+            let sr = to_screen(z.bounds).shrink(2.0);
             let is_sel = self.selected_zone_idx == Some(i);
             let fill = if is_sel {
                 Color32::from_rgba_unmultiplied(hi[0], hi[1], hi[2], 95)
@@ -781,8 +878,8 @@ impl SettingsApp {
             p.rect_filled(sr, 2.0, fill);
             p.rect_stroke(sr, 2.0, stroke);
 
-            let pw = ((z[2] - z[0]) * mon_w as f32).round() as i32;
-            let ph = ((z[3] - z[1]) * mon_h as f32).round() as i32;
+            let pw = ((z.bounds[2] - z.bounds[0]) * mon_w as f32).round() as i32;
+            let ph = ((z.bounds[3] - z.bounds[1]) * mon_h as f32).round() as i32;
             let label = format!("{}\n{}x{}", i + 1, pw, ph);
             p.text(
                 sr.center(),
@@ -796,11 +893,40 @@ impl SettingsApp {
                 },
             );
 
+            if let Some(tr) = z.trigger {
+                let tr_rect = to_screen(tr).shrink(1.0);
+                let amber = Color32::from_rgb(245, 158, 11);
+                let tr_fill = Color32::from_rgba_unmultiplied(245, 158, 11, if is_sel { 85 } else { 52 });
+                p.rect_filled(tr_rect, 2.0, tr_fill);
+                p.rect_stroke(
+                    tr_rect,
+                    2.0,
+                    Stroke::new(if is_sel { 2.0_f32 } else { 1.5_f32 }, amber),
+                );
+                p.text(
+                    tr_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("Trigger {}", i + 1),
+                    egui::FontId::proportional(11.5),
+                    Color32::from_rgb(254, 243, 199),
+                );
+            }
+
             if is_sel {
-                let raw_sr = to_screen(*z);
+                let handle_rect = if self.zone_edit_target == ZoneEditTarget::Trigger {
+                    z.trigger.unwrap_or(z.bounds)
+                } else {
+                    z.bounds
+                };
+                let raw_sr = to_screen(handle_rect);
+                let handle_col = if self.zone_edit_target == ZoneEditTarget::Trigger {
+                    Color32::from_rgb(245, 158, 11)
+                } else {
+                    Color32::from_rgb(bd[0], bd[1], bd[2])
+                };
                 for (_, hp) in handle_positions(raw_sr) {
                     p.circle_filled(hp, 5.0, Color32::WHITE);
-                    p.circle_stroke(hp, 5.0, Stroke::new(1.5_f32, Color32::from_rgb(bd[0], bd[1], bd[2])));
+                    p.circle_stroke(hp, 5.0, Stroke::new(1.5_f32, handle_col));
                 }
             }
         }
@@ -824,24 +950,68 @@ impl SettingsApp {
             p.rect_stroke(dr, 0.0, Stroke::new(1.5_f32, Color32::WHITE));
         }
 
-        // Numeric fine-tuning row for selected zone
+        // Custom Trigger toggle & numeric fine-tuning row for selected zone
         if let Some(sel) = self.selected_zone_idx {
             if let Some(z) = zones.get_mut(sel) {
                 ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new(format!("Zone {}:", sel + 1)).strong());
+                    let mut has_trigger = z.trigger.is_some();
+                    if ui
+                        .checkbox(&mut has_trigger, "Custom Trigger Area")
+                        .changed()
+                    {
+                        if has_trigger {
+                            let b = z.bounds;
+                            let cx = (b[0] + b[2]) * 0.5;
+                            let cy = (b[1] + b[3]) * 0.5;
+                            let hw = ((b[2] - b[0]) * 0.25).max(0.06);
+                            let hh = ((b[3] - b[1]) * 0.25).max(0.08);
+                            z.trigger = Some([
+                                (cx - hw).clamp(0.0, 0.9),
+                                (cy - hh).clamp(0.0, 0.9),
+                                (cx + hw).clamp(0.1, 1.0),
+                                (cy + hh).clamp(0.1, 1.0),
+                            ]);
+                            self.zone_edit_target = ZoneEditTarget::Trigger;
+                        } else {
+                            z.trigger = None;
+                            self.zone_edit_target = ZoneEditTarget::Bounds;
+                        }
+                    }
+                    if z.trigger.is_some() {
+                        ui.separator();
+                        ui.selectable_value(
+                            &mut self.zone_edit_target,
+                            ZoneEditTarget::Bounds,
+                            "Snap Output (Blue)",
+                        );
+                        ui.selectable_value(
+                            &mut self.zone_edit_target,
+                            ZoneEditTarget::Trigger,
+                            "Trigger Box (Amber)",
+                        );
+                    }
+                });
+
+                let (tag, active_rect) = match (self.zone_edit_target, &mut z.trigger) {
+                    (ZoneEditTarget::Trigger, Some(tr)) => ("Trigger:", tr),
+                    _ => ("Output:", &mut z.bounds),
+                };
                 ui.horizontal(|ui| {
-                    let max_x1 = z[2] - 0.05;
-                    let max_y1 = z[3] - 0.05;
-                    let min_x2 = z[0] + 0.05;
-                    let min_y2 = z[1] + 0.05;
-                    ui.label(format!("Zone {}:", sel + 1));
+                    let max_x1 = active_rect[2] - 0.05;
+                    let max_y1 = active_rect[3] - 0.05;
+                    let min_x2 = active_rect[0] + 0.05;
+                    let min_y2 = active_rect[1] + 0.05;
+                    ui.label(tag);
                     ui.label("X1");
-                    ui.add(egui::DragValue::new(&mut z[0]).speed(0.005).range(0.0..=max_x1));
+                    ui.add(egui::DragValue::new(&mut active_rect[0]).speed(0.005).range(0.0..=max_x1));
                     ui.label("Y1");
-                    ui.add(egui::DragValue::new(&mut z[1]).speed(0.005).range(0.0..=max_y1));
+                    ui.add(egui::DragValue::new(&mut active_rect[1]).speed(0.005).range(0.0..=max_y1));
                     ui.label("X2");
-                    ui.add(egui::DragValue::new(&mut z[2]).speed(0.005).range(min_x2..=1.0));
+                    ui.add(egui::DragValue::new(&mut active_rect[2]).speed(0.005).range(min_x2..=1.0));
                     ui.label("Y2");
-                    ui.add(egui::DragValue::new(&mut z[3]).speed(0.005).range(min_y2..=1.0));
+                    ui.add(egui::DragValue::new(&mut active_rect[3]).speed(0.005).range(min_y2..=1.0));
                 });
             }
         }
@@ -1197,6 +1367,21 @@ impl SettingsApp {
                     0.0..=0.50,
                 ));
             });
+            ui.horizontal(|ui| {
+                ui.label("Settings Window Text Scale:");
+                ui.add(
+                    egui::Slider::new(&mut self.config.appearance.gui_scale, 0.85..=1.75)
+                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                );
+                if ui.button("Reset 100%").clicked() {
+                    self.config.appearance.gui_scale = 1.0;
+                }
+                ui.label(
+                    egui::RichText::new("(Also Ctrl+ / Ctrl- / Ctrl+0)")
+                        .small()
+                        .weak(),
+                );
+            });
         });
 
         ui.add_space(8.0);
@@ -1268,6 +1453,16 @@ impl eframe::App for SettingsApp {
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S)) {
             self.save_and_notify_daemon();
         }
+        if ctx.input(|i| i.modifiers.ctrl && (i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals))) {
+            self.config.appearance.gui_scale = (self.config.appearance.gui_scale + 0.05).clamp(0.85, 1.75);
+        }
+        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Minus)) {
+            self.config.appearance.gui_scale = (self.config.appearance.gui_scale - 0.05).clamp(0.85, 1.75);
+        }
+        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Num0)) {
+            self.config.appearance.gui_scale = 1.0;
+        }
+        ctx.set_zoom_factor(self.config.appearance.gui_scale.clamp(0.85, 1.75));
 
         egui::TopBottomPanel::top("tabs_bar").show(ctx, |ui| {
             ui.add_space(4.0);
@@ -1380,6 +1575,32 @@ pub fn run_settings_window(reload_msg: u32) {
     let _ = eframe::run_native(
         SETTINGS_TITLE,
         options,
-        Box::new(move |_cc| Ok(Box::new(SettingsApp::new(config, monitors, reload_msg)))),
+        Box::new(move |cc| {
+            let mut style = (*cc.egui_ctx.style()).clone();
+            style.text_styles.insert(
+                egui::TextStyle::Body,
+                egui::FontId::proportional(14.5),
+            );
+            style.text_styles.insert(
+                egui::TextStyle::Button,
+                egui::FontId::proportional(14.5),
+            );
+            style.text_styles.insert(
+                egui::TextStyle::Monospace,
+                egui::FontId::monospace(13.5),
+            );
+            style.text_styles.insert(
+                egui::TextStyle::Small,
+                egui::FontId::proportional(12.0),
+            );
+            style.text_styles.insert(
+                egui::TextStyle::Heading,
+                egui::FontId::proportional(21.0),
+            );
+            cc.egui_ctx.set_style(style);
+            cc.egui_ctx
+                .set_zoom_factor(config.appearance.gui_scale.clamp(0.85, 1.75));
+            Ok(Box::new(SettingsApp::new(config, monitors, reload_msg)))
+        }),
     );
 }

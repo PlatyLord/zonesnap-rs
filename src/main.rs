@@ -431,7 +431,7 @@ impl DaemonState {
                             .merged_zones
                             .iter()
                             .filter_map(|&i| zones.get(i))
-                            .map(|z| custom_zone_pixel_rect(sess.monitor.rc_work, *z))
+                            .map(|z| custom_zone_pixel_rect(sess.monitor.rc_work, z.bounds))
                             .collect();
                         sess.target_rect = union_rects(&rects);
                     }
@@ -441,7 +441,7 @@ impl DaemonState {
                     let rects: Vec<Rect> = hits
                         .iter()
                         .filter_map(|&i| zones.get(i))
-                        .map(|z| custom_zone_pixel_rect(sess.monitor.rc_work, *z))
+                        .map(|z| custom_zone_pixel_rect(sess.monitor.rc_work, z.bounds))
                         .collect();
                     sess.target_rect = union_rects(&rects);
                 }

@@ -1,22 +1,93 @@
 use crate::hotkeys::HotkeySpec;
 use crate::monitor::MonitorInfo;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct CustomZone {
+    pub bounds: [f32; 4],
+    pub trigger: Option<[f32; 4]>,
+}
+
+impl CustomZone {
+    pub fn simple(bounds: [f32; 4]) -> Self {
+        Self {
+            bounds,
+            trigger: None,
+        }
+    }
+
+    pub fn with_trigger(bounds: [f32; 4], trigger: [f32; 4]) -> Self {
+        Self {
+            bounds,
+            trigger: Some(trigger),
+        }
+    }
+
+    pub fn effective_trigger(&self) -> [f32; 4] {
+        self.trigger.unwrap_or(self.bounds)
+    }
+
+    pub fn has_custom_trigger(&self) -> bool {
+        self.trigger.is_some()
+    }
+}
+
+impl Serialize for CustomZone {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Detailed<'a> {
+            bounds: &'a [f32; 4],
+            trigger: &'a [f32; 4],
+        }
+        match &self.trigger {
+            Some(tr) => Detailed {
+                bounds: &self.bounds,
+                trigger: tr,
+            }
+            .serialize(serializer),
+            None => self.bounds.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CustomZone {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Simple([f32; 4]),
+            Detailed {
+                bounds: [f32; 4],
+                #[serde(default)]
+                trigger: Option<[f32; 4]>,
+            },
+        }
+        match Repr::deserialize(deserializer)? {
+            Repr::Simple(bounds) => Ok(Self::simple(bounds)),
+            Repr::Detailed { bounds, trigger } => Ok(Self { bounds, trigger }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LayoutMode {
     DynamicGrid { cols: u32, rows: u32 },
-    CustomZones { zones: Vec<[f32; 4]> },
+    CustomZones { zones: Vec<CustomZone> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Layout {
     pub name: String,
     pub mode: LayoutMode,
+}
+
+fn default_gui_scale() -> f32 {
+    1.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -26,6 +97,8 @@ pub struct OverlayStyle {
     pub highlight_opacity: f32,
     pub border_color: [u8; 3],
     pub zone_bg_opacity: f32,
+    #[serde(default = "default_gui_scale")]
+    pub gui_scale: f32,
 }
 
 impl Default for OverlayStyle {
@@ -35,6 +108,7 @@ impl Default for OverlayStyle {
             highlight_opacity: 0.35,
             border_color: [56, 189, 248],
             zone_bg_opacity: 0.14,
+            gui_scale: 1.0,
         }
     }
 }
@@ -149,9 +223,9 @@ pub fn default_layouts() -> Vec<Layout> {
             name: "Columns (3-Up)".to_string(),
             mode: LayoutMode::CustomZones {
                 zones: vec![
-                    [0.0, 0.0, 1.0 / 3.0, 1.0],
-                    [1.0 / 3.0, 0.0, 2.0 / 3.0, 1.0],
-                    [2.0 / 3.0, 0.0, 1.0, 1.0],
+                    CustomZone::simple([0.0, 0.0, 1.0 / 3.0, 1.0]),
+                    CustomZone::simple([1.0 / 3.0, 0.0, 2.0 / 3.0, 1.0]),
+                    CustomZone::simple([2.0 / 3.0, 0.0, 1.0, 1.0]),
                 ],
             },
         },
@@ -159,9 +233,9 @@ pub fn default_layouts() -> Vec<Layout> {
             name: "Focus + Stack".to_string(),
             mode: LayoutMode::CustomZones {
                 zones: vec![
-                    [0.0, 0.0, 0.65, 1.0],
-                    [0.65, 0.0, 1.0, 0.5],
-                    [0.65, 0.5, 1.0, 1.0],
+                    CustomZone::simple([0.0, 0.0, 0.65, 1.0]),
+                    CustomZone::simple([0.65, 0.0, 1.0, 0.5]),
+                    CustomZone::simple([0.65, 0.5, 1.0, 1.0]),
                 ],
             },
         },
@@ -361,13 +435,17 @@ mod tests {
         prof.active_layout_index = 1;
         prof.layouts[0].mode = LayoutMode::DynamicGrid { cols: 8, rows: 4 };
         prof.layouts[1].mode = LayoutMode::CustomZones {
-            zones: vec![[0.0, 0.0, 0.4, 1.0], [0.4, 0.0, 1.0, 1.0]],
+            zones: vec![
+                CustomZone::simple([0.0, 0.0, 0.4, 1.0]),
+                CustomZone::with_trigger([0.15, 0.0, 0.85, 1.0], [0.42, 0.25, 0.58, 0.75]),
+            ],
         };
 
         cfg.appearance.highlight_color = [255, 100, 50];
         cfg.appearance.highlight_opacity = 0.6;
         cfg.appearance.border_color = [10, 200, 120];
         cfg.appearance.zone_bg_opacity = 0.25;
+        cfg.appearance.gui_scale = 1.25;
         cfg.behavior.restore_on_unsnap = false;
         cfg.behavior.drag_top_maximize = false;
         cfg.behavior.excluded_apps = vec!["notepad.exe".to_string()];
@@ -385,5 +463,20 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn custom_zone_legacy_array_and_trigger_deserialize() {
+        let json = r#"[
+            [0.0, 0.0, 0.5, 1.0],
+            { "bounds": [0.15, 0.0, 0.85, 1.0], "trigger": [0.42, 0.25, 0.58, 0.75] }
+        ]"#;
+        let parsed: Vec<CustomZone> = serde_json::from_str(json).expect("deserialize mixed zones");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0], CustomZone::simple([0.0, 0.0, 0.5, 1.0]));
+        assert_eq!(
+            parsed[1],
+            CustomZone::with_trigger([0.15, 0.0, 0.85, 1.0], [0.42, 0.25, 0.58, 0.75])
+        );
     }
 }
