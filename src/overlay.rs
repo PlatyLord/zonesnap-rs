@@ -9,14 +9,13 @@ use windows::Win32::Graphics::Gdi::{
     SelectObject, SetBkMode, SetTextColor, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
     DEFAULT_CHARSET, DEFAULT_PITCH, DIB_RGB_COLORS, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE,
-    DT_VCENTER, FF_SWISS, FW_SEMIBOLD, HDC, HGDIOBJ, OUT_DEFAULT_PRECIS, TRANSPARENT,
+    DT_VCENTER, FF_SWISS, FW_SEMIBOLD, HBITMAP, HDC, HGDIOBJ, OUT_DEFAULT_PRECIS, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW, SetWindowPos, ShowWindow,
-    UpdateLayeredWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
-    SW_SHOWNA, ULW_ALPHA, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    UpdateLayeredWindow, HWND_TOPMOST, SWP_NOACTIVATE, SW_HIDE, SW_SHOWNA, ULW_ALPHA, WNDCLASSW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 /// Map a screen coordinate `(x, y)` inside `work` to a 0-based grid cell `(col, row)`.
@@ -159,10 +158,38 @@ pub struct OverlayRenderState<'a> {
     pub toast_text: Option<&'a str>,
 }
 
+#[derive(Clone, PartialEq)]
+struct BaseLayerKey {
+    work: Rect,
+    layout: Layout,
+    style: OverlayStyle,
+}
+
+#[derive(Clone, PartialEq)]
+struct FrameKey {
+    work: Rect,
+    layout: Layout,
+    style: OverlayStyle,
+    grid_anchor: Option<(u32, u32)>,
+    grid_current: Option<(u32, u32)>,
+    active_zones: Vec<usize>,
+    target_rect: Option<Rect>,
+    toast_text: Option<String>,
+}
+
 pub struct OverlayWindow {
     hwnd: HWND,
     visible: bool,
     current_work: Rect,
+    mem_dc: HDC,
+    hbmp: HBITMAP,
+    old_bmp: HGDIOBJ,
+    bits_ptr: *mut u32,
+    buf_w: i32,
+    buf_h: i32,
+    cached_base: Vec<u32>,
+    cached_base_key: Option<BaseLayerKey>,
+    last_frame_key: Option<FrameKey>,
 }
 
 unsafe extern "system" fn overlay_wnd_proc(
@@ -213,6 +240,15 @@ impl OverlayWindow {
                 hwnd,
                 visible: false,
                 current_work: Rect::default(),
+                mem_dc: HDC::default(),
+                hbmp: HBITMAP::default(),
+                old_bmp: HGDIOBJ::default(),
+                bits_ptr: std::ptr::null_mut(),
+                buf_w: 0,
+                buf_h: 0,
+                cached_base: Vec::new(),
+                cached_base_key: None,
+                last_frame_key: None,
             })
         }
     }
@@ -223,6 +259,68 @@ impl OverlayWindow {
 
     pub fn is_visible(&self) -> bool {
         self.visible
+    }
+
+    fn release_dib(&mut self) {
+        unsafe {
+            if !self.mem_dc.0.is_null() {
+                if !self.old_bmp.0.is_null() {
+                    SelectObject(self.mem_dc, self.old_bmp);
+                    self.old_bmp = HGDIOBJ::default();
+                }
+                if !self.hbmp.0.is_null() {
+                    let _ = DeleteObject(HGDIOBJ(self.hbmp.0));
+                    self.hbmp = HBITMAP::default();
+                }
+                let _ = DeleteDC(self.mem_dc);
+                self.mem_dc = HDC::default();
+            }
+        }
+        self.bits_ptr = std::ptr::null_mut();
+        self.buf_w = 0;
+        self.buf_h = 0;
+    }
+
+    fn ensure_dib(&mut self, w: i32, h: i32) -> bool {
+        if !self.bits_ptr.is_null() && self.buf_w == w && self.buf_h == h {
+            return true;
+        }
+        self.release_dib();
+        unsafe {
+            let hdc_screen = CreateCompatibleDC(HDC::default());
+            if hdc_screen.0.is_null() {
+                return false;
+            }
+            let mut bmi = BITMAPINFO::default();
+            bmi.bmiHeader = BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -h,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            };
+            let mut bits: *mut c_void = std::ptr::null_mut();
+            let Ok(hbmp) = CreateDIBSection(hdc_screen, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
+            else {
+                let _ = DeleteDC(hdc_screen);
+                return false;
+            };
+            if bits.is_null() {
+                let _ = DeleteObject(HGDIOBJ(hbmp.0));
+                let _ = DeleteDC(hdc_screen);
+                return false;
+            }
+            let old_bmp = SelectObject(hdc_screen, HGDIOBJ(hbmp.0));
+            self.mem_dc = hdc_screen;
+            self.hbmp = hbmp;
+            self.old_bmp = old_bmp;
+            self.bits_ptr = bits as *mut u32;
+            self.buf_w = w;
+            self.buf_h = h;
+            true
+        }
     }
 
     pub fn show_for_monitor(&mut self, work: Rect) {
@@ -249,87 +347,94 @@ impl OverlayWindow {
             }
             self.visible = false;
         }
+        self.last_frame_key = None;
     }
 
     pub fn render(&mut self, state: &OverlayRenderState<'_>) {
+        let mut sorted_active: Vec<usize> = state.active_zones.iter().copied().collect();
+        sorted_active.sort_unstable();
+
+        let frame_key = FrameKey {
+            work: state.work,
+            layout: state.layout.clone(),
+            style: state.style.clone(),
+            grid_anchor: state.grid_anchor,
+            grid_current: state.grid_current,
+            active_zones: sorted_active,
+            target_rect: state.target_rect,
+            toast_text: state.toast_text.map(str::to_string),
+        };
+
+        if self.visible && self.last_frame_key.as_ref() == Some(&frame_key) {
+            return;
+        }
+
         if state.work != self.current_work || !self.visible {
             self.show_for_monitor(state.work);
         }
 
         let w = state.work.width().max(1);
         let h = state.work.height().max(1);
+        if !self.ensure_dib(w, h) {
+            return;
+        }
+
+        let base_key = BaseLayerKey {
+            work: state.work,
+            layout: state.layout.clone(),
+            style: state.style.clone(),
+        };
+        let total_px = (w as usize) * (h as usize);
+        if self.cached_base_key.as_ref() != Some(&base_key) || self.cached_base.len() != total_px {
+            self.cached_base.resize(total_px, 0);
+            paint_base_layer(
+                &mut self.cached_base,
+                w,
+                h,
+                state.work,
+                state.layout,
+                state.style,
+            );
+            self.cached_base_key = Some(base_key);
+        }
 
         unsafe {
-            let hdc_screen = CreateCompatibleDC(HDC::default());
-            if hdc_screen.0.is_null() {
-                return;
-            }
-            let mut bmi = BITMAPINFO::default();
-            bmi.bmiHeader = BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: w,
-                biHeight: -h,
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
+            let buf = std::slice::from_raw_parts_mut(self.bits_ptr, total_px);
+            buf.copy_from_slice(&self.cached_base);
+            paint_dynamic_layer(buf, w, h, state);
+
+            let pt_dst = POINT {
+                x: state.work.left,
+                y: state.work.top,
+            };
+            let size = SIZE { cx: w, cy: h };
+            let pt_src = POINT { x: 0, y: 0 };
+            let blend = BLENDFUNCTION {
+                BlendOp: AC_SRC_OVER as u8,
+                BlendFlags: 0,
+                SourceConstantAlpha: 255,
+                AlphaFormat: AC_SRC_ALPHA as u8,
             };
 
-            let mut bits: *mut c_void = std::ptr::null_mut();
-            let Ok(hbmp) = CreateDIBSection(hdc_screen, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
-            else {
-                let _ = DeleteDC(hdc_screen);
-                return;
-            };
-
-            if !bits.is_null() {
-                let old_bmp = SelectObject(hdc_screen, HGDIOBJ(hbmp.0));
-                let buf = std::slice::from_raw_parts_mut(bits as *mut u32, (w * h) as usize);
-                paint_overlay_buffer(buf, w, h, state);
-
-                let pt_dst = POINT {
-                    x: state.work.left,
-                    y: state.work.top,
-                };
-                let size = SIZE { cx: w, cy: h };
-                let pt_src = POINT { x: 0, y: 0 };
-                let blend = BLENDFUNCTION {
-                    BlendOp: AC_SRC_OVER as u8,
-                    BlendFlags: 0,
-                    SourceConstantAlpha: 255,
-                    AlphaFormat: AC_SRC_ALPHA as u8,
-                };
-
-                let _ = SetWindowPos(
-                    self.hwnd,
-                    HWND_TOPMOST,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                );
-                let _ = UpdateLayeredWindow(
-                    self.hwnd,
-                    HDC::default(),
-                    Some(&pt_dst),
-                    Some(&size),
-                    hdc_screen,
-                    Some(&pt_src),
-                    COLORREF(0),
-                    Some(&blend),
-                    ULW_ALPHA,
-                );
-                SelectObject(hdc_screen, old_bmp);
-            }
-            let _ = DeleteObject(HGDIOBJ(hbmp.0));
-            let _ = DeleteDC(hdc_screen);
+            let _ = UpdateLayeredWindow(
+                self.hwnd,
+                HDC::default(),
+                Some(&pt_dst),
+                Some(&size),
+                self.mem_dc,
+                Some(&pt_src),
+                COLORREF(0),
+                Some(&blend),
+                ULW_ALPHA,
+            );
         }
+        self.last_frame_key = Some(frame_key);
     }
 }
 
 impl Drop for OverlayWindow {
     fn drop(&mut self) {
+        self.release_dib();
         if !self.hwnd.0.is_null() {
             unsafe {
                 let _ = DestroyWindow(self.hwnd);
@@ -339,16 +444,35 @@ impl Drop for OverlayWindow {
     }
 }
 
-#[inline]
+#[inline(always)]
+fn div255(v: u32) -> u32 {
+    (v + 128 + ((v + 128) >> 8)) >> 8
+}
+
+#[inline(always)]
 fn premul_bgra(r: u8, g: u8, b: u8, a: u8) -> u32 {
     let a32 = a as u32;
-    let pr = ((r as u32 * a32) + 127) / 255;
-    let pg = ((g as u32 * a32) + 127) / 255;
-    let pb = ((b as u32 * a32) + 127) / 255;
+    let pr = div255(r as u32 * a32);
+    let pg = div255(g as u32 * a32);
+    let pb = div255(b as u32 * a32);
     (a32 << 24) | (pr << 16) | (pg << 8) | pb
 }
 
-#[inline]
+#[inline(always)]
+fn blend_pixel_premul(dst: u32, sa: u32, inv: u32, sr: u32, sg: u32, sb: u32) -> u32 {
+    let da = (dst >> 24) & 0xFF;
+    let dr = (dst >> 16) & 0xFF;
+    let dg = (dst >> 8) & 0xFF;
+    let db = dst & 0xFF;
+
+    let out_a = (sa + div255(da * inv)).min(255);
+    let out_r = (sr + div255(dr * inv)).min(255);
+    let out_g = (sg + div255(dg * inv)).min(255);
+    let out_b = (sb + div255(db * inv)).min(255);
+    (out_a << 24) | (out_r << 16) | (out_g << 8) | out_b
+}
+
+#[inline(always)]
 fn blend_pixel(dst: u32, src_r: u8, src_g: u8, src_b: u8, src_a: u8) -> u32 {
     if src_a == 0 {
         return dst;
@@ -358,23 +482,28 @@ fn blend_pixel(dst: u32, src_r: u8, src_g: u8, src_b: u8, src_a: u8) -> u32 {
     }
     let sa = src_a as u32;
     let inv = 255 - sa;
-    let da = (dst >> 24) & 0xFF;
-    let dr = (dst >> 16) & 0xFF;
-    let dg = (dst >> 8) & 0xFF;
-    let db = dst & 0xFF;
-
-    let sr = (src_r as u32 * sa + 127) / 255;
-    let sg = (src_g as u32 * sa + 127) / 255;
-    let sb = (src_b as u32 * sa + 127) / 255;
-
-    let out_a = (sa + ((da * inv + 127) / 255)).min(255);
-    let out_r = (sr + ((dr * inv + 127) / 255)).min(255);
-    let out_g = (sg + ((dg * inv + 127) / 255)).min(255);
-    let out_b = (sb + ((db * inv + 127) / 255)).min(255);
-    (out_a << 24) | (out_r << 16) | (out_g << 8) | out_b
+    let sr = div255(src_r as u32 * sa);
+    let sg = div255(src_g as u32 * sa);
+    let sb = div255(src_b as u32 * sa);
+    blend_pixel_premul(dst, sa, inv, sr, sg, sb)
 }
 
-fn fill_rect(buf: &mut [u32], bw: i32, bh: i32, rx: i32, ry: i32, rw: i32, rh: i32, r: u8, g: u8, b: u8, a: u8) {
+fn fill_rect(
+    buf: &mut [u32],
+    bw: i32,
+    bh: i32,
+    rx: i32,
+    ry: i32,
+    rw: i32,
+    rh: i32,
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+) {
+    if a == 0 {
+        return;
+    }
     let x0 = rx.max(0);
     let y0 = ry.max(0);
     let x1 = (rx + rw).min(bw);
@@ -382,11 +511,26 @@ fn fill_rect(buf: &mut [u32], bw: i32, bh: i32, rx: i32, ry: i32, rw: i32, rh: i
     if x0 >= x1 || y0 >= y1 {
         return;
     }
+    if a == 255 {
+        let solid = premul_bgra(r, g, b, 255);
+        for y in y0..y1 {
+            let start = (y * bw + x0) as usize;
+            let end = (y * bw + x1) as usize;
+            buf[start..end].fill(solid);
+        }
+        return;
+    }
+
+    let sa = a as u32;
+    let inv = 255 - sa;
+    let sr = div255(r as u32 * sa);
+    let sg = div255(g as u32 * sa);
+    let sb = div255(b as u32 * sa);
     for y in y0..y1 {
-        let row_off = (y * bw) as usize;
-        for x in x0..x1 {
-            let idx = row_off + x as usize;
-            buf[idx] = blend_pixel(buf[idx], r, g, b, a);
+        let start = (y * bw + x0) as usize;
+        let end = (y * bw + x1) as usize;
+        for px in &mut buf[start..end] {
+            *px = blend_pixel_premul(*px, sa, inv, sr, sg, sb);
         }
     }
 }
@@ -412,7 +556,19 @@ fn stroke_rect(
     fill_rect(buf, bw, bh, rx, ry, rw, t, r, g, b, a);
     fill_rect(buf, bw, bh, rx, ry + rh - t, rw, t, r, g, b, a);
     fill_rect(buf, bw, bh, rx, ry + t, t, (rh - 2 * t).max(0), r, g, b, a);
-    fill_rect(buf, bw, bh, rx + rw - t, ry + t, t, (rh - 2 * t).max(0), r, g, b, a);
+    fill_rect(
+        buf,
+        bw,
+        bh,
+        rx + rw - t,
+        ry + t,
+        t,
+        (rh - 2 * t).max(0),
+        r,
+        g,
+        b,
+        a,
+    );
 }
 
 fn fill_rounded_rect(
@@ -435,6 +591,12 @@ fn fill_rounded_rect(
     let x1 = (rx + rw).min(bw);
     let y1 = (ry + rh).min(bh);
     let r2 = rad * rad;
+
+    let sa = a as u32;
+    let inv = 255 - sa;
+    let sr = div255(r as u32 * sa);
+    let sg = div255(g as u32 * sa);
+    let sb = div255(b as u32 * sa);
 
     for y in y0..y1 {
         let dy = if y < ry + rad {
@@ -459,7 +621,7 @@ fn fill_rounded_rect(
                 }
             }
             let idx = row_off + x as usize;
-            buf[idx] = blend_pixel(buf[idx], r, g, b, a);
+            buf[idx] = blend_pixel_premul(buf[idx], sa, inv, sr, sg, sb);
         }
     }
 }
@@ -572,16 +734,18 @@ fn draw_aa_text_on_bgra(
     }
 }
 
-fn paint_overlay_buffer(buf: &mut [u32], w: i32, h: i32, state: &OverlayRenderState<'_>) {
-    // Translucent dark-glass backdrop
+fn paint_base_layer(
+    buf: &mut [u32],
+    w: i32,
+    h: i32,
+    work: Rect,
+    layout: &Layout,
+    style: &OverlayStyle,
+) {
     buf.fill(premul_bgra(12, 16, 24, 96));
+    let bg_a = (style.zone_bg_opacity.clamp(0.0, 0.8) * 255.0).round() as u8;
 
-    let hi = state.style.highlight_color;
-    let hi_a = (state.style.highlight_opacity.clamp(0.05, 0.95) * 255.0).round() as u8;
-    let bd = state.style.border_color;
-    let bg_a = (state.style.zone_bg_opacity.clamp(0.0, 0.8) * 255.0).round() as u8;
-
-    match &state.layout.mode {
+    match &layout.mode {
         LayoutMode::DynamicGrid { cols, rows } => {
             let cols = (*cols).max(1);
             let rows = (*rows).max(1);
@@ -594,7 +758,46 @@ fn paint_overlay_buffer(buf: &mut [u32], w: i32, h: i32, state: &OverlayRenderSt
                 fill_rect(buf, w, h, 0, gy, w, 1, 255, 255, 255, 42);
             }
             stroke_rect(buf, w, h, 0, 0, w, h, 1, 255, 255, 255, 55);
+        }
+        LayoutMode::CustomZones { zones } => {
+            const GAP: i32 = 4;
+            for (idx, z) in zones.iter().enumerate() {
+                let pxr = custom_zone_pixel_rect(work, *z);
+                let rx = pxr.left - work.left + GAP;
+                let ry = pxr.top - work.top + GAP;
+                let rw = (pxr.width() - GAP * 2).max(4);
+                let rh = (pxr.height() - GAP * 2).max(4);
 
+                fill_rect(buf, w, h, rx, ry, rw, rh, 255, 255, 255, bg_a);
+                stroke_rect(buf, w, h, rx, ry, rw, rh, 1, 226, 232, 240, 110);
+
+                let num = format!("{}", idx + 1);
+                let badge_w = 48.min(rw);
+                let badge_h = 36.min(rh);
+                draw_aa_text_on_bgra(
+                    buf,
+                    w,
+                    h,
+                    rx + (rw - badge_w) / 2,
+                    ry + (rh - badge_h) / 2,
+                    badge_w,
+                    badge_h,
+                    &num,
+                    22,
+                    [203, 213, 225],
+                );
+            }
+        }
+    }
+}
+
+fn paint_dynamic_layer(buf: &mut [u32], w: i32, h: i32, state: &OverlayRenderState<'_>) {
+    let hi = state.style.highlight_color;
+    let hi_a = (state.style.highlight_opacity.clamp(0.05, 0.95) * 255.0).round() as u8;
+    let bd = state.style.border_color;
+
+    match &state.layout.mode {
+        LayoutMode::DynamicGrid { .. } => {
             if let Some(target) = state.target_rect {
                 let rx = target.left - state.work.left;
                 let ry = target.top - state.work.top;
@@ -629,21 +832,18 @@ fn paint_overlay_buffer(buf: &mut [u32], w: i32, h: i32, state: &OverlayRenderSt
         }
         LayoutMode::CustomZones { zones } => {
             const GAP: i32 = 4;
-            for (idx, z) in zones.iter().enumerate() {
+            for &idx in state.active_zones {
+                let Some(z) = zones.get(idx) else {
+                    continue;
+                };
                 let pxr = custom_zone_pixel_rect(state.work, *z);
                 let rx = pxr.left - state.work.left + GAP;
                 let ry = pxr.top - state.work.top + GAP;
                 let rw = (pxr.width() - GAP * 2).max(4);
                 let rh = (pxr.height() - GAP * 2).max(4);
 
-                let active = state.active_zones.contains(&idx);
-                if active {
-                    fill_rect(buf, w, h, rx, ry, rw, rh, hi[0], hi[1], hi[2], hi_a);
-                    stroke_rect(buf, w, h, rx, ry, rw, rh, 2, bd[0], bd[1], bd[2], 220);
-                } else {
-                    fill_rect(buf, w, h, rx, ry, rw, rh, 255, 255, 255, bg_a);
-                    stroke_rect(buf, w, h, rx, ry, rw, rh, 1, 226, 232, 240, 110);
-                }
+                fill_rect(buf, w, h, rx, ry, rw, rh, hi[0], hi[1], hi[2], hi_a);
+                stroke_rect(buf, w, h, rx, ry, rw, rh, 2, bd[0], bd[1], bd[2], 220);
 
                 let num = format!("{}", idx + 1);
                 let badge_w = 48.min(rw);
@@ -658,11 +858,7 @@ fn paint_overlay_buffer(buf: &mut [u32], w: i32, h: i32, state: &OverlayRenderSt
                     badge_h,
                     &num,
                     22,
-                    if active {
-                        [255, 255, 255]
-                    } else {
-                        [203, 213, 225]
-                    },
+                    [255, 255, 255],
                 );
             }
 
@@ -672,7 +868,19 @@ fn paint_overlay_buffer(buf: &mut [u32], w: i32, h: i32, state: &OverlayRenderSt
                 let rw = target.width();
                 let rh = target.height();
                 if state.active_zones.len() > 1 {
-                    fill_rect(buf, w, h, rx, ry, rw, rh, hi[0], hi[1], hi[2], (hi_a as u16 * 3 / 4) as u8);
+                    fill_rect(
+                        buf,
+                        w,
+                        h,
+                        rx,
+                        ry,
+                        rw,
+                        rh,
+                        hi[0],
+                        hi[1],
+                        hi[2],
+                        (hi_a as u16 * 3 / 4) as u8,
+                    );
                 }
                 stroke_rect(buf, w, h, rx, ry, rw, rh, 3, bd[0], bd[1], bd[2], 245);
             }
@@ -685,7 +893,20 @@ fn paint_overlay_buffer(buf: &mut [u32], w: i32, h: i32, state: &OverlayRenderSt
         let px = (w - pill_w) / 2;
         let py = 22;
         fill_rounded_rect(buf, w, h, px, py, pill_w, pill_h, 10, 15, 23, 42, 235);
-        stroke_rect(buf, w, h, px + 2, py + 2, pill_w - 4, pill_h - 4, 1, bd[0], bd[1], bd[2], 170);
+        stroke_rect(
+            buf,
+            w,
+            h,
+            px + 2,
+            py + 2,
+            pill_w - 4,
+            pill_h - 4,
+            1,
+            bd[0],
+            bd[1],
+            bd[2],
+            170,
+        );
         draw_aa_text_on_bgra(
             buf,
             w,
@@ -736,11 +957,8 @@ mod tests {
         };
         let zones = vec![[0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 1.0, 1.0]];
 
-        // Center of zone 0 -> only zone 0
         assert_eq!(hit_test_custom_zones(work, &zones, 250, 500, 16), vec![0]);
-        // Center of zone 1 -> only zone 1
         assert_eq!(hit_test_custom_zones(work, &zones, 750, 500, 16), vec![1]);
-        // Near shared border x=500 -> merges both zones
         assert_eq!(
             hit_test_custom_zones(work, &zones, 495, 500, 16),
             vec![0, 1]

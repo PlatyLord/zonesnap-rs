@@ -73,6 +73,14 @@ pub fn modifier_to_vk(s: &str) -> i32 {
     }
 }
 
+/// Convert an optional modifier string (`"Shift"`, `"Disabled"`, etc.) to a Win32 VK (`0` if disabled).
+pub fn optional_modifier_to_vk(s: &str) -> i32 {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "" | "none" | "disabled" => 0,
+        _ => modifier_to_vk(s),
+    }
+}
+
 pub struct HotkeyManager {
     registered_ids: Vec<i32>,
 }
@@ -134,6 +142,8 @@ mod tests {
         assert_eq!(modifier_to_vk("Ctrl"), VK_CONTROL.0 as i32);
         assert_eq!(modifier_to_vk("Shift"), VK_SHIFT.0 as i32);
         assert_eq!(modifier_to_vk("Win"), VK_LWIN.0 as i32);
+        assert_eq!(optional_modifier_to_vk("Disabled"), 0);
+        assert_eq!(optional_modifier_to_vk("Shift"), VK_SHIFT.0 as i32);
 
         let spec = HotkeySpec {
             modifiers: vec!["Win".to_string(), "Alt".to_string()],

@@ -62,6 +62,12 @@ pub struct HotkeysConfig {
     pub open_settings: HotkeySpec,
     pub move_resize_modifier: String,
     pub monitor_lock_modifier: String,
+    #[serde(default = "default_corner_resize_modifier")]
+    pub corner_resize_modifier: String,
+}
+
+fn default_corner_resize_modifier() -> String {
+    "Shift".to_string()
 }
 
 impl Default for HotkeysConfig {
@@ -77,6 +83,7 @@ impl Default for HotkeysConfig {
             },
             move_resize_modifier: "Alt".to_string(),
             monitor_lock_modifier: "Ctrl".to_string(),
+            corner_resize_modifier: default_corner_resize_modifier(),
         }
     }
 }
@@ -362,6 +369,7 @@ mod tests {
         };
         cfg.hotkeys.move_resize_modifier = "Ctrl".to_string();
         cfg.hotkeys.monitor_lock_modifier = "Shift".to_string();
+        cfg.hotkeys.corner_resize_modifier = "Win".to_string();
 
         cfg.save_at(&path).expect("save edited config");
         let reloaded = Config::load_or_create_at(&path, &monitors);

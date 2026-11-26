@@ -54,7 +54,7 @@ impl HookMode {
 pub enum HookEvent {
     LeftDownCandidate { x: i32, y: i32 },
     StartAltMove { x: i32, y: i32 },
-    StartAltResize { x: i32, y: i32 },
+    StartAltResize { x: i32, y: i32, corner_mode: bool },
     TriggerOverlayFromDrag { x: i32, y: i32 },
     CancelOverlay,
     OverlayHotkeyConfirm { x: i32, y: i32 },
@@ -69,6 +69,7 @@ pub struct HookSharedState {
     mode: AtomicU8,
     pub move_mod_vk: AtomicI32,
     pub lock_mod_vk: AtomicI32,
+    pub corner_mod_vk: AtomicI32,
     daemon_hwnd: AtomicIsize,
     pub overlay_hwnd: AtomicIsize,
     pending_suppress_lbutton_up: AtomicBool,
@@ -86,6 +87,7 @@ impl HookSharedState {
             mode: AtomicU8::new(HookMode::Idle as u8),
             move_mod_vk: AtomicI32::new(VK_MENU.0 as i32),
             lock_mod_vk: AtomicI32::new(VK_CONTROL.0 as i32),
+            corner_mod_vk: AtomicI32::new(VK_SHIFT.0 as i32),
             daemon_hwnd: AtomicIsize::new(daemon_hwnd),
             overlay_hwnd: AtomicIsize::new(0),
             pending_suppress_lbutton_up: AtomicBool::new(false),
@@ -278,11 +280,13 @@ unsafe extern "system" fn mouse_hook_proc(ncode: i32, wparam: WPARAM, lparam: LP
                     if !is_point_excluded(&ctx.state, x, y) {
                         let move_vk = ctx.state.move_mod_vk.load(Ordering::Acquire);
                         if is_vk_down(move_vk) {
+                            let corner_vk = ctx.state.corner_mod_vk.load(Ordering::Acquire);
+                            let corner_mode = corner_vk != 0 && is_vk_down(corner_vk);
                             ctx.state
                                 .pending_suppress_rbutton_up
                                 .store(true, Ordering::Release);
                             ctx.state.set_mode(HookMode::AltResizing);
-                            send_event(ctx, HookEvent::StartAltResize { x, y });
+                            send_event(ctx, HookEvent::StartAltResize { x, y, corner_mode });
                             return LRESULT(1);
                         }
                     }

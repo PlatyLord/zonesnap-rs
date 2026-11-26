@@ -445,6 +445,24 @@ pub fn detect_resize_edges(rect: Rect, x: i32, y: i32) -> ResizeEdges {
     }
 }
 
+/// Split `rect` into 2x2 quadrants around its center and return the nearest corner.
+pub fn detect_nearest_corner(rect: Rect, x: i32, y: i32) -> ResizeEdges {
+    let mid_x = rect.left + rect.width() / 2;
+    let mid_y = rect.top + rect.height() / 2;
+    ResizeEdges {
+        horiz: if x < mid_x {
+            HorizontalEdge::Left
+        } else {
+            HorizontalEdge::Right
+        },
+        vert: if y < mid_y {
+            VerticalEdge::Top
+        } else {
+            VerticalEdge::Bottom
+        },
+    }
+}
+
 /// Compute the resized rectangle from `orig`, `edges`, and cursor delta `(dx, dy)` while enforcing minimum dimensions.
 pub fn compute_resized_rect(
     orig: Rect,
@@ -625,6 +643,44 @@ mod tests {
         );
         assert_eq!(
             detect_resize_edges(r, 250, 250),
+            ResizeEdges {
+                horiz: HorizontalEdge::Right,
+                vert: VerticalEdge::Bottom
+            }
+        );
+    }
+
+    #[test]
+    fn detect_nearest_corner_all_4_quadrants() {
+        let r = Rect {
+            left: 100,
+            top: 200,
+            right: 500,
+            bottom: 600,
+        };
+        assert_eq!(
+            detect_nearest_corner(r, 200, 300),
+            ResizeEdges {
+                horiz: HorizontalEdge::Left,
+                vert: VerticalEdge::Top
+            }
+        );
+        assert_eq!(
+            detect_nearest_corner(r, 350, 300),
+            ResizeEdges {
+                horiz: HorizontalEdge::Right,
+                vert: VerticalEdge::Top
+            }
+        );
+        assert_eq!(
+            detect_nearest_corner(r, 200, 450),
+            ResizeEdges {
+                horiz: HorizontalEdge::Left,
+                vert: VerticalEdge::Bottom
+            }
+        );
+        assert_eq!(
+            detect_nearest_corner(r, 350, 450),
             ResizeEdges {
                 horiz: HorizontalEdge::Right,
                 vert: VerticalEdge::Bottom

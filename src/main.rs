@@ -13,7 +13,8 @@ mod window_ops;
 use crate::config::{config_modified_time, Config, LayoutMode};
 use crate::hook::{HookEvent, HookMode, HookSharedState, HookThread, WM_ZONESNAP_EVENT};
 use crate::hotkeys::{
-    modifier_to_vk, HotkeyManager, HOTKEY_ACTIVATE_OVERLAY, HOTKEY_OPEN_SETTINGS,
+    modifier_to_vk, optional_modifier_to_vk, HotkeyManager, HOTKEY_ACTIVATE_OVERLAY,
+    HOTKEY_OPEN_SETTINGS,
 };
 use crate::monitor::{enumerate_monitors, monitor_from_point, MonitorInfo, Rect};
 use crate::overlay::{
@@ -24,11 +25,11 @@ use crate::tray::{
     TrayIcon, TrayMonitorLayouts, IDM_EXIT, IDM_LAYOUT_BASE, IDM_RELOAD, IDM_SETTINGS, WM_TRAYICON,
 };
 use crate::window_ops::{
-    cancel_modal_move, clip_cursor_to_monitor, compute_resized_rect, detect_resize_edges,
-    get_root_window_at, get_window_rect, hwnd_to_isize, is_excluded_app, is_manageable_window,
-    is_resizable_window, is_titlebar_hit, is_valid_window, isize_to_hwnd, move_window_nosize,
-    resize_window, restore_if_maximized, restore_unsnapped_window, send_menu_mask_key,
-    snap_window_flush, unclip_cursor, ResizeEdges,
+    cancel_modal_move, clip_cursor_to_monitor, compute_resized_rect, detect_nearest_corner,
+    detect_resize_edges, get_root_window_at, get_window_rect, hwnd_to_isize, is_excluded_app,
+    is_manageable_window, is_resizable_window, is_titlebar_hit, is_valid_window, isize_to_hwnd,
+    move_window_nosize, resize_window, restore_if_maximized, restore_unsnapped_window,
+    send_menu_mask_key, snap_window_flush, unclip_cursor, ResizeEdges,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -176,7 +177,7 @@ impl DaemonState {
             .retain(|&raw, _| is_valid_window(isize_to_hwnd(raw)));
     }
 
-    fn show_tray_menu(&mut self) {
+    fn prepare_tray_menu(&mut self) -> Vec<TrayMonitorLayouts> {
         self.check_and_reload_if_changed();
         let monitors = enumerate_monitors();
         self.config.ensure_monitors(&monitors);
@@ -209,7 +210,7 @@ impl DaemonState {
                 });
             }
         }
-        TrayIcon::show_context_menu(self.daemon_hwnd, &menus);
+        menus
     }
 
     fn select_tray_layout(&mut self, cmd_id: usize) {
@@ -250,6 +251,10 @@ impl DaemonState {
         );
         self.shared.lock_mod_vk.store(
             modifier_to_vk(&cfg.hotkeys.monitor_lock_modifier),
+            Ordering::Release,
+        );
+        self.shared.corner_mod_vk.store(
+            optional_modifier_to_vk(&cfg.hotkeys.corner_resize_modifier),
             Ordering::Release,
         );
         self.hotkeys.register_all(
@@ -710,7 +715,7 @@ impl DaemonState {
                 let lock_down = unsafe { ((GetAsyncKeyState(lock_vk) as u16) & 0x8000) != 0 };
                 self.update_cursor_lock(lock_down, x, y);
             }
-            HookEvent::StartAltResize { x, y } => {
+            HookEvent::StartAltResize { x, y, corner_mode } => {
                 let Some(hwnd) = get_root_window_at(x, y) else {
                     self.end_drag();
                     return;
@@ -727,7 +732,11 @@ impl DaemonState {
                     return;
                 };
                 self.snapped_cache.remove(&hwnd_to_isize(hwnd));
-                let edges = detect_resize_edges(orig_rect, x, y);
+                let edges = if corner_mode {
+                    detect_nearest_corner(orig_rect, x, y)
+                } else {
+                    detect_resize_edges(orig_rect, x, y)
+                };
                 self.drag = DragSession::AltResize {
                     hwnd: hwnd_to_isize(hwnd),
                     start_x: x,
@@ -938,16 +947,20 @@ unsafe extern "system" fn daemon_wnd_proc(
     match msg {
         WM_ZONESNAP_EVENT => {
             DAEMON_STATE.with(|cell| {
-                if let Some(state) = cell.borrow_mut().as_mut() {
-                    state.process_events();
+                if let Ok(mut guard) = cell.try_borrow_mut() {
+                    if let Some(state) = guard.as_mut() {
+                        state.process_events();
+                    }
                 }
             });
             LRESULT(0)
         }
         WM_DISPLAYCHANGE => {
             DAEMON_STATE.with(|cell| {
-                if let Some(state) = cell.borrow_mut().as_mut() {
-                    state.handle_display_change();
+                if let Ok(mut guard) = cell.try_borrow_mut() {
+                    if let Some(state) = guard.as_mut() {
+                        state.handle_display_change();
+                    }
                 }
             });
             LRESULT(0)
@@ -955,8 +968,10 @@ unsafe extern "system" fn daemon_wnd_proc(
         WM_HOTKEY => {
             let id = wparam.0 as i32;
             DAEMON_STATE.with(|cell| {
-                if let Some(state) = cell.borrow_mut().as_mut() {
-                    state.handle_hotkey(id);
+                if let Ok(mut guard) = cell.try_borrow_mut() {
+                    if let Some(state) = guard.as_mut() {
+                        state.handle_hotkey(id);
+                    }
                 }
             });
             LRESULT(0)
@@ -964,15 +979,20 @@ unsafe extern "system" fn daemon_wnd_proc(
         WM_TRAYICON => {
             let ev = (lparam.0 as u32) & 0xFFFF;
             if ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU {
-                DAEMON_STATE.with(|cell| {
-                    if let Some(state) = cell.borrow_mut().as_mut() {
-                        state.show_tray_menu();
-                    }
+                let menus = DAEMON_STATE.with(|cell| {
+                    cell.try_borrow_mut()
+                        .ok()
+                        .and_then(|mut g| g.as_mut().map(|s| s.prepare_tray_menu()))
                 });
+                if let Some(menus) = menus {
+                    TrayIcon::show_context_menu(hwnd, &menus);
+                }
             } else if ev == WM_LBUTTONDBLCLK {
                 DAEMON_STATE.with(|cell| {
-                    if let Some(state) = cell.borrow().as_ref() {
-                        state.open_settings();
+                    if let Ok(guard) = cell.try_borrow() {
+                        if let Some(state) = guard.as_ref() {
+                            state.open_settings();
+                        }
                     }
                 });
             }
@@ -982,8 +1002,10 @@ unsafe extern "system" fn daemon_wnd_proc(
             let cmd = (wparam.0 & 0xFFFF) as usize;
             if cmd >= IDM_LAYOUT_BASE {
                 DAEMON_STATE.with(|cell| {
-                    if let Some(state) = cell.borrow_mut().as_mut() {
-                        state.select_tray_layout(cmd);
+                    if let Ok(mut guard) = cell.try_borrow_mut() {
+                        if let Some(state) = guard.as_mut() {
+                            state.select_tray_layout(cmd);
+                        }
                     }
                 });
                 return LRESULT(0);
@@ -991,15 +1013,19 @@ unsafe extern "system" fn daemon_wnd_proc(
             match cmd {
                 IDM_SETTINGS => {
                     DAEMON_STATE.with(|cell| {
-                        if let Some(state) = cell.borrow().as_ref() {
-                            state.open_settings();
+                        if let Ok(guard) = cell.try_borrow() {
+                            if let Some(state) = guard.as_ref() {
+                                state.open_settings();
+                            }
                         }
                     });
                 }
                 IDM_RELOAD => {
                     DAEMON_STATE.with(|cell| {
-                        if let Some(state) = cell.borrow_mut().as_mut() {
-                            state.reload_config();
+                        if let Ok(mut guard) = cell.try_borrow_mut() {
+                            if let Some(state) = guard.as_mut() {
+                                state.reload_config();
+                            }
                         }
                     });
                 }
@@ -1016,16 +1042,18 @@ unsafe extern "system" fn daemon_wnd_proc(
                 let _ = KillTimer(hwnd, timer_id);
             }
             DAEMON_STATE.with(|cell| {
-                if let Some(state) = cell.borrow_mut().as_mut() {
-                    if timer_id == TIMER_TOAST_HIDE {
-                        state.clear_toast();
-                    } else if timer_id == TIMER_POST_SNAP_REVERIFY {
-                        state.reverify_pending_snap();
-                    } else if timer_id == TIMER_CONFIG_WATCH {
-                        state.check_and_reload_if_changed();
-                        state.watch_ticks = state.watch_ticks.wrapping_add(1);
-                        if state.watch_ticks % 60 == 0 {
-                            state.prune_snapped_cache();
+                if let Ok(mut guard) = cell.try_borrow_mut() {
+                    if let Some(state) = guard.as_mut() {
+                        if timer_id == TIMER_TOAST_HIDE {
+                            state.clear_toast();
+                        } else if timer_id == TIMER_POST_SNAP_REVERIFY {
+                            state.reverify_pending_snap();
+                        } else if timer_id == TIMER_CONFIG_WATCH {
+                            state.check_and_reload_if_changed();
+                            state.watch_ticks = state.watch_ticks.wrapping_add(1);
+                            if state.watch_ticks % 60 == 0 {
+                                state.prune_snapped_cache();
+                            }
                         }
                     }
                 }
@@ -1118,6 +1146,10 @@ fn main() {
     );
     shared.lock_mod_vk.store(
         modifier_to_vk(&cfg.hotkeys.monitor_lock_modifier),
+        Ordering::Release,
+    );
+    shared.corner_mod_vk.store(
+        optional_modifier_to_vk(&cfg.hotkeys.corner_resize_modifier),
         Ordering::Release,
     );
     shared

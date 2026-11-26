@@ -925,6 +925,26 @@ impl SettingsApp {
                         }
                     });
             });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Nearest-Corner Resize Modifier:");
+                egui::ComboBox::from_id_salt("mod_corner_resize")
+                    .selected_text(&self.config.hotkeys.corner_resize_modifier)
+                    .show_ui(ui, |ui| {
+                        for m in ["Shift", "Ctrl", "Alt", "Win", "Disabled"] {
+                            ui.selectable_value(
+                                &mut self.config.hotkeys.corner_resize_modifier,
+                                m.to_string(),
+                                m,
+                            );
+                        }
+                    });
+                ui.label(
+                    egui::RichText::new("(Hold Move/Resize + this key + Right-Drag to grab nearest corner)")
+                        .small()
+                        .weak(),
+                );
+            });
             if self
                 .config
                 .hotkeys
@@ -934,6 +954,22 @@ impl SettingsApp {
                 ui.colored_label(
                     Color32::from_rgb(251, 191, 36),
                     "Warning: Move/Resize and Monitor-Lock modifiers are set to the same key.",
+                );
+            }
+            if !self
+                .config
+                .hotkeys
+                .corner_resize_modifier
+                .eq_ignore_ascii_case("Disabled")
+                && self
+                    .config
+                    .hotkeys
+                    .move_resize_modifier
+                    .eq_ignore_ascii_case(&self.config.hotkeys.corner_resize_modifier)
+            {
+                ui.colored_label(
+                    Color32::from_rgb(251, 191, 36),
+                    "Warning: Move/Resize and Nearest-Corner Resize modifiers are set to the same key.",
                 );
             }
         });
