@@ -1,8 +1,9 @@
 use crate::monitor::{MonitorInfo, Rect};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use windows::core::PWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
@@ -12,9 +13,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     ClipCursor, GetAncestor, GetClassNameW, GetWindowLongW, GetWindowRect,
-    GetWindowThreadProcessId, IsWindowVisible, SendMessageTimeoutW, SetWindowPos, WindowFromPoint,
-    GA_ROOT, GWL_STYLE, HTCAPTION, SMTO_ABORTIFHUNG, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
-    WM_NCHITTEST, WS_CHILD, WS_THICKFRAME,
+    GetWindowThreadProcessId, IsWindowVisible, IsZoomed, PostMessageW, SendMessageTimeoutW,
+    SetWindowPos, ShowWindow, WindowFromPoint, GA_ROOT, GWL_STYLE, HTCAPTION, SMTO_ABORTIFHUNG,
+    SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_RESTORE, WM_CANCELMODE, WM_NCHITTEST, WS_CHILD,
+    WS_THICKFRAME,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +170,168 @@ pub fn get_window_rect(hwnd: HWND) -> Option<Rect> {
     let mut rc = RECT::default();
     unsafe { GetWindowRect(hwnd, &mut rc) }.ok()?;
     Some(Rect::from_win32(rc))
+}
+
+/// Read the visible DWM extended frame bounds of `hwnd` in physical screen coordinates.
+pub fn get_dwm_frame_rect(hwnd: HWND) -> Option<Rect> {
+    if hwnd.0.is_null() {
+        return None;
+    }
+    let mut rc = RECT::default();
+    let res = unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            &mut rc as *mut RECT as *mut c_void,
+            std::mem::size_of::<RECT>() as u32,
+        )
+    };
+    if res.is_ok() {
+        Some(Rect::from_win32(rc))
+    } else {
+        None
+    }
+}
+
+/// Measure invisible DWM drop-shadow border thicknesses `(left, top, right, bottom)`.
+pub fn get_dwm_border_offsets(hwnd: HWND) -> (i32, i32, i32, i32) {
+    let Some(win) = get_window_rect(hwnd) else {
+        return (0, 0, 0, 0);
+    };
+    let Some(ext) = get_dwm_frame_rect(hwnd) else {
+        return (0, 0, 0, 0);
+    };
+    let l = (ext.left - win.left).clamp(-32, 32);
+    let t = (ext.top - win.top).clamp(-32, 32);
+    let r = (win.right - ext.right).clamp(-32, 32);
+    let b = (win.bottom - ext.bottom).clamp(-32, 32);
+    (l, t, r, b)
+}
+
+/// Expand `target` by DWM invisible border thicknesses so the visible frame aligns flush with `target`.
+pub fn compute_compensated_rect(target: Rect, borders: (i32, i32, i32, i32)) -> Rect {
+    Rect {
+        left: target.left - borders.0,
+        top: target.top - borders.1,
+        right: target.right + borders.2,
+        bottom: target.bottom + borders.3,
+    }
+}
+
+/// Snap `hwnd` flush against `target` with DWM border compensation and mixed-DPI second-pass adjustment.
+/// Caches pre-snap `RECT` in `snapped_cache` if not already recorded.
+pub fn snap_window_flush(
+    hwnd: HWND,
+    target: Rect,
+    snapped_cache: &mut HashMap<isize, Rect>,
+    own_overlay_hwnd: isize,
+) -> bool {
+    if !is_manageable_window(hwnd, own_overlay_hwnd) || !is_resizable_window(hwnd) {
+        return false;
+    }
+
+    unsafe {
+        if IsZoomed(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+    }
+
+    let key = hwnd_to_isize(hwnd);
+    if !snapped_cache.contains_key(&key) {
+        if let Some(orig) = get_window_rect(hwnd) {
+            snapped_cache.insert(key, orig);
+        }
+    }
+
+    let borders = get_dwm_border_offsets(hwnd);
+    let comp = compute_compensated_rect(target, borders);
+    let ok = unsafe {
+        SetWindowPos(
+            hwnd,
+            HWND::default(),
+            comp.left,
+            comp.top,
+            comp.width().max(1),
+            comp.height().max(1),
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+        .is_ok()
+    };
+    if !ok {
+        return false;
+    }
+
+    // Second pass handles DPI scaling changes when snapping across monitors with different DPIs.
+    if let Some(ext) = get_dwm_frame_rect(hwnd) {
+        if (ext.left - target.left).abs() > 1
+            || (ext.top - target.top).abs() > 1
+            || (ext.right - target.right).abs() > 1
+            || (ext.bottom - target.bottom).abs() > 1
+        {
+            let borders2 = get_dwm_border_offsets(hwnd);
+            let comp2 = compute_compensated_rect(target, borders2);
+            unsafe {
+                let _ = SetWindowPos(
+                    hwnd,
+                    HWND::default(),
+                    comp2.left,
+                    comp2.top,
+                    comp2.width().max(1),
+                    comp2.height().max(1),
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+        }
+    }
+
+    true
+}
+
+/// Restore a previously snapped window's cached width & height centered around the cursor's grab point.
+pub fn restore_unsnapped_window(
+    hwnd: HWND,
+    cursor_x: i32,
+    cursor_y: i32,
+    snapped_cache: &mut HashMap<isize, Rect>,
+    is_alt_move: bool,
+) -> Option<Rect> {
+    let key = hwnd_to_isize(hwnd);
+    let orig = snapped_cache.remove(&key)?;
+    let w = orig.width().max(160);
+    let h = orig.height().max(100);
+    let new_left = cursor_x - w / 2;
+    let new_top = if is_alt_move {
+        cursor_y - h / 2
+    } else {
+        cursor_y - 16
+    };
+    let restored = Rect {
+        left: new_left,
+        top: new_top,
+        right: new_left + w,
+        bottom: new_top + h,
+    };
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            HWND::default(),
+            restored.left,
+            restored.top,
+            w,
+            h,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+    Some(restored)
+}
+
+/// Ask a window to cancel any modal drag/menu loop (`WM_CANCELMODE`) asynchronously.
+pub fn cancel_modal_move(hwnd: HWND) {
+    if !hwnd.0.is_null() {
+        unsafe {
+            let _ = PostMessageW(hwnd, WM_CANCELMODE, WPARAM(0), LPARAM(0));
+        }
+    }
 }
 
 /// Check if `(x, y)` lies on the window's titlebar (`HTCAPTION`) via non-blocking `SendMessageTimeoutW`.
@@ -357,6 +521,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dwm_border_compensation_expands_target_rect() {
+        let target = Rect {
+            left: 0,
+            top: 0,
+            right: 960,
+            bottom: 1040,
+        };
+        let borders = (7, 0, 7, 7);
+        assert_eq!(
+            compute_compensated_rect(target, borders),
+            Rect {
+                left: -7,
+                top: 0,
+                right: 967,
+                bottom: 1047,
+            }
+        );
+    }
+
+    #[test]
     fn detect_resize_edges_all_9_cells() {
         let r = Rect {
             left: 0,
@@ -392,7 +576,6 @@ mod tests {
                 vert: VerticalEdge::Center
             }
         );
-        // Center cell falls back to bottom-right
         assert_eq!(
             detect_resize_edges(r, 150, 150),
             ResizeEdges {

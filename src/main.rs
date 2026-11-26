@@ -1,21 +1,25 @@
 #![windows_subsystem = "windows"]
 
 mod hook;
+mod hotkeys;
 mod monitor;
 mod overlay;
 mod window_ops;
 
 use crate::hook::{HookEvent, HookMode, HookSharedState, HookThread, WM_ZONESNAP_EVENT};
+use crate::hotkeys::{
+    HotkeyManager, HotkeySpec, HOTKEY_ACTIVATE_OVERLAY, HOTKEY_OPEN_SETTINGS,
+};
 use crate::monitor::{monitor_from_point, MonitorInfo, Rect};
 use crate::overlay::{
     custom_zone_pixel_rect, grid_cell_at, grid_span_rect, hit_test_custom_zones, union_rects,
     Layout, LayoutMode, OverlayRenderState, OverlayStyle, OverlayWindow,
 };
 use crate::window_ops::{
-    clip_cursor_to_monitor, compute_resized_rect, detect_resize_edges, get_root_window_at,
-    get_window_rect, hwnd_to_isize, is_manageable_window, is_resizable_window, is_titlebar_hit,
-    isize_to_hwnd, move_window_nosize, resize_window, send_menu_mask_key, unclip_cursor,
-    ResizeEdges,
+    cancel_modal_move, clip_cursor_to_monitor, compute_resized_rect, detect_resize_edges,
+    get_root_window_at, get_window_rect, hwnd_to_isize, is_excluded_app, is_manageable_window,
+    is_resizable_window, is_titlebar_hit, isize_to_hwnd, move_window_nosize, resize_window,
+    restore_unsnapped_window, send_menu_mask_key, snap_window_flush, unclip_cursor, ResizeEdges,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -34,12 +38,14 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_SHIFT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
-    KillTimer, PostQuitMessage, RegisterClassW, SetTimer, TranslateMessage, HWND_MESSAGE, MSG,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY, WM_TIMER, WNDCLASSW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetAncestor, GetCursorPos,
+    GetForegroundWindow, GetMessageW, KillTimer, PostQuitMessage, RegisterClassW, SetTimer,
+    TranslateMessage, GA_ROOT, HWND_MESSAGE, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY,
+    WM_HOTKEY, WM_TIMER, WNDCLASSW,
 };
 
 const TIMER_TOAST_HIDE: usize = 1;
+const TIMER_POST_SNAP_REVERIFY: usize = 2;
 
 struct MutexGuard(HANDLE);
 impl Drop for MutexGuard {
@@ -64,6 +70,8 @@ enum DragSession {
     },
     Standard {
         hwnd: isize,
+        start_x: i32,
+        start_y: i32,
     },
     AltMove {
         hwnd: isize,
@@ -133,7 +141,11 @@ struct DaemonState {
     rx: Receiver<HookEvent>,
     overlay: OverlayWindow,
     style: OverlayStyle,
+    restore_on_unsnap: bool,
     monitor_layouts: HashMap<String, MonitorLayouts>,
+    snapped_cache: HashMap<isize, Rect>,
+    pending_reverify_snap: Option<(isize, Rect)>,
+    hotkeys: HotkeyManager,
     drag: DragSession,
     overlay_session: Option<OverlaySession>,
     cursor_locked: bool,
@@ -145,6 +157,7 @@ impl DaemonState {
         shared: Arc<HookSharedState>,
         rx: Receiver<HookEvent>,
         overlay: OverlayWindow,
+        hotkeys: HotkeyManager,
     ) -> Self {
         Self {
             daemon_hwnd,
@@ -152,7 +165,11 @@ impl DaemonState {
             rx,
             overlay,
             style: OverlayStyle::default(),
+            restore_on_unsnap: true,
             monitor_layouts: HashMap::new(),
+            snapped_cache: HashMap::new(),
+            pending_reverify_snap: None,
+            hotkeys,
             drag: DragSession::None,
             overlay_session: None,
             cursor_locked: false,
@@ -199,6 +216,18 @@ impl DaemonState {
         if let Some(sess) = &mut self.overlay_session {
             sess.toast_text = None;
             self.render_overlay();
+        }
+    }
+
+    fn reverify_pending_snap(&mut self) {
+        if let Some((hwnd_raw, target)) = self.pending_reverify_snap.take() {
+            let overlay_hwnd = self.shared.overlay_hwnd.load(Ordering::Acquire);
+            snap_window_flush(
+                isize_to_hwnd(hwnd_raw),
+                target,
+                &mut self.snapped_cache,
+                overlay_hwnd,
+            );
         }
     }
 
@@ -358,8 +387,16 @@ impl DaemonState {
             self.end_drag();
         } else {
             match sess.return_drag {
-                DragSession::Standard { hwnd } => {
-                    self.drag = DragSession::Standard { hwnd };
+                DragSession::Standard {
+                    hwnd,
+                    start_x,
+                    start_y,
+                } => {
+                    self.drag = DragSession::Standard {
+                        hwnd,
+                        start_x,
+                        start_y,
+                    };
                     self.shared.set_mode(HookMode::StandardDragging);
                 }
                 DragSession::AltMove {
@@ -377,6 +414,35 @@ impl DaemonState {
                 _ => self.end_drag(),
             }
         }
+    }
+
+    fn commit_overlay_snap(&mut self) {
+        let Some(sess) = self.overlay_session.take() else {
+            self.end_drag();
+            return;
+        };
+        self.overlay.hide();
+        unsafe {
+            let _ = KillTimer(self.daemon_hwnd, TIMER_TOAST_HIDE);
+        }
+
+        if let Some(target) = sess.target_rect {
+            let hwnd = isize_to_hwnd(sess.target_hwnd);
+            let overlay_hwnd = self.shared.overlay_hwnd.load(Ordering::Acquire);
+            let was_standard = matches!(sess.return_drag, DragSession::Standard { .. });
+            if was_standard {
+                cancel_modal_move(hwnd);
+            }
+            if snap_window_flush(hwnd, target, &mut self.snapped_cache, overlay_hwnd)
+                && was_standard
+            {
+                self.pending_reverify_snap = Some((sess.target_hwnd, target));
+                unsafe {
+                    let _ = SetTimer(self.daemon_hwnd, TIMER_POST_SNAP_REVERIFY, 25, None);
+                }
+            }
+        }
+        self.end_drag();
     }
 
     fn cycle_layout(&mut self, delta: i16) {
@@ -409,6 +475,46 @@ impl DaemonState {
 
         unsafe {
             let _ = SetTimer(self.daemon_hwnd, TIMER_TOAST_HIDE, 1500, None);
+        }
+    }
+
+    fn handle_hotkey(&mut self, id: i32) {
+        match id {
+            HOTKEY_ACTIVATE_OVERLAY => {
+                if self.overlay_session.is_some() {
+                    self.cancel_overlay();
+                    return;
+                }
+                let fg = unsafe { GetForegroundWindow() };
+                if fg.0.is_null() {
+                    return;
+                }
+                let root = unsafe { GetAncestor(fg, GA_ROOT) };
+                let target = if root.0.is_null() { fg } else { root };
+                let overlay_hwnd = self.shared.overlay_hwnd.load(Ordering::Acquire);
+                if !is_manageable_window(target, overlay_hwnd) {
+                    return;
+                }
+                let excluded = self
+                    .shared
+                    .excluded_apps
+                    .read()
+                    .map(|g| is_excluded_app(target, &g))
+                    .unwrap_or(false);
+                if excluded {
+                    return;
+                }
+                let mut pt = POINT::default();
+                unsafe {
+                    let _ = GetCursorPos(&mut pt);
+                }
+                self.shared.set_mode(HookMode::OverlayFromHotkey);
+                self.show_overlay(hwnd_to_isize(target), pt.x, pt.y, true);
+            }
+            HOTKEY_OPEN_SETTINGS => {
+                // Settings GUI wired in Milestone 6
+            }
+            _ => {}
         }
     }
 
@@ -456,11 +562,18 @@ impl DaemonState {
                     self.end_drag();
                     return;
                 }
-                let Some(rect) = get_window_rect(hwnd) else {
+                let Some(mut rect) = get_window_rect(hwnd) else {
                     self.end_drag();
                     return;
                 };
                 send_menu_mask_key();
+                if self.restore_on_unsnap {
+                    if let Some(restored) =
+                        restore_unsnapped_window(hwnd, x, y, &mut self.snapped_cache, true)
+                    {
+                        rect = restored;
+                    }
+                }
                 self.drag = DragSession::AltMove {
                     hwnd: hwnd_to_isize(hwnd),
                     grab_offset_x: x - rect.left,
@@ -485,6 +598,7 @@ impl DaemonState {
                     return;
                 };
                 send_menu_mask_key();
+                self.snapped_cache.remove(&hwnd_to_isize(hwnd));
                 let edges = detect_resize_edges(orig_rect, x, y);
                 self.drag = DragSession::AltResize {
                     hwnd: hwnd_to_isize(hwnd),
@@ -496,7 +610,7 @@ impl DaemonState {
             }
             HookEvent::TriggerOverlayFromDrag { x, y } => {
                 let target_hwnd = match &self.drag {
-                    DragSession::Standard { hwnd } | DragSession::AltMove { hwnd, .. } => *hwnd,
+                    DragSession::Standard { hwnd, .. } | DragSession::AltMove { hwnd, .. } => *hwnd,
                     _ => {
                         self.end_drag();
                         return;
@@ -508,8 +622,7 @@ impl DaemonState {
                 self.cancel_overlay();
             }
             HookEvent::OverlayHotkeyConfirm { .. } => {
-                // Snapping wired in Milestone 4
-                self.end_drag();
+                self.commit_overlay_snap();
             }
             HookEvent::WheelCycle { delta } => {
                 self.cycle_layout(delta);
@@ -542,16 +655,35 @@ impl DaemonState {
                     self.update_cursor_lock(down, pt.x, pt.y);
                 }
             }
-            HookEvent::LeftUp { .. } => {
-                // Snapping on drop wired in Milestone 4
-                if self.overlay_session.is_some()
-                    || matches!(
-                        self.drag,
-                        DragSession::MaybeStandard { .. }
-                            | DragSession::Standard { .. }
-                            | DragSession::AltMove { .. }
-                    )
+            HookEvent::LeftUp { x, y } => {
+                if let Some(sess) = &self.overlay_session {
+                    if !sess.from_hotkey {
+                        self.commit_overlay_snap();
+                        return;
+                    }
+                }
+                if let DragSession::Standard {
+                    hwnd,
+                    start_x,
+                    start_y,
+                } = self.drag
                 {
+                    if self.restore_on_unsnap && (x - start_x).abs() + (y - start_y).abs() > 6 {
+                        restore_unsnapped_window(
+                            isize_to_hwnd(hwnd),
+                            x,
+                            y,
+                            &mut self.snapped_cache,
+                            false,
+                        );
+                    }
+                }
+                if matches!(
+                    self.drag,
+                    DragSession::MaybeStandard { .. }
+                        | DragSession::Standard { .. }
+                        | DragSession::AltMove { .. }
+                ) {
                     self.end_drag();
                 }
             }
@@ -565,16 +697,13 @@ impl DaemonState {
 
     fn handle_move(&mut self, x: i32, y: i32) {
         if let Some(mut sess) = self.overlay_session.take() {
-            let from_alt_move = matches!(sess.return_drag, DragSession::AltMove { .. });
-            if from_alt_move {
-                if let DragSession::AltMove {
-                    hwnd,
-                    grab_offset_x,
-                    grab_offset_y,
-                } = sess.return_drag
-                {
-                    move_window_nosize(isize_to_hwnd(hwnd), x - grab_offset_x, y - grab_offset_y);
-                }
+            if let DragSession::AltMove {
+                hwnd,
+                grab_offset_x,
+                grab_offset_y,
+            } = sess.return_drag
+            {
+                move_window_nosize(isize_to_hwnd(hwnd), x - grab_offset_x, y - grab_offset_y);
             }
             self.update_overlay_cursor(&mut sess, x, y);
             self.overlay_session = Some(sess);
@@ -597,7 +726,11 @@ impl DaemonState {
                         .map(|r| r.left != start_rect.left || r.top != start_rect.top)
                         .unwrap_or(false);
                     if titlebar_hit || moved {
-                        self.drag = DragSession::Standard { hwnd };
+                        self.drag = DragSession::Standard {
+                            hwnd,
+                            start_x,
+                            start_y,
+                        };
                         self.shared.set_mode(HookMode::StandardDragging);
                         let lock_vk = self.shared.lock_mod_vk.load(Ordering::Acquire);
                         let lock_down =
@@ -631,6 +764,12 @@ impl DaemonState {
     }
 }
 
+impl Drop for DaemonState {
+    fn drop(&mut self) {
+        self.hotkeys.unregister_all(self.daemon_hwnd);
+    }
+}
+
 thread_local! {
     static DAEMON_STATE: RefCell<Option<DaemonState>> = const { RefCell::new(None) };
 }
@@ -650,15 +789,27 @@ unsafe extern "system" fn daemon_wnd_proc(
             });
             LRESULT(0)
         }
+        WM_HOTKEY => {
+            let id = wparam.0 as i32;
+            DAEMON_STATE.with(|cell| {
+                if let Some(state) = cell.borrow_mut().as_mut() {
+                    state.handle_hotkey(id);
+                }
+            });
+            LRESULT(0)
+        }
         WM_TIMER => {
-            if wparam.0 == TIMER_TOAST_HIDE {
-                let _ = KillTimer(hwnd, TIMER_TOAST_HIDE);
-                DAEMON_STATE.with(|cell| {
-                    if let Some(state) = cell.borrow_mut().as_mut() {
+            let timer_id = wparam.0;
+            let _ = KillTimer(hwnd, timer_id);
+            DAEMON_STATE.with(|cell| {
+                if let Some(state) = cell.borrow_mut().as_mut() {
+                    if timer_id == TIMER_TOAST_HIDE {
                         state.clear_toast();
+                    } else if timer_id == TIMER_POST_SNAP_REVERIFY {
+                        state.reverify_pending_snap();
                     }
-                });
-            }
+                }
+            });
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -722,6 +873,17 @@ fn main() {
         return;
     };
 
+    let mut hotkeys = HotkeyManager::new();
+    let default_activate = HotkeySpec {
+        modifiers: vec!["Win".to_string(), "Alt".to_string()],
+        key: "Z".to_string(),
+    };
+    let default_settings = HotkeySpec {
+        modifiers: vec!["Win".to_string(), "Alt".to_string()],
+        key: "E".to_string(),
+    };
+    hotkeys.register_all(daemon_hwnd, &default_activate, &default_settings);
+
     let mut default_excluded = HashSet::new();
     default_excluded.insert("mstsc.exe".to_string());
     default_excluded.insert("vmconnect.exe".to_string());
@@ -737,7 +899,7 @@ fn main() {
     let (_hook_thread, rx) = HookThread::spawn(Arc::clone(&shared));
 
     DAEMON_STATE.with(|cell| {
-        *cell.borrow_mut() = Some(DaemonState::new(daemon_hwnd, shared, rx, overlay));
+        *cell.borrow_mut() = Some(DaemonState::new(daemon_hwnd, shared, rx, overlay, hotkeys));
     });
 
     unsafe {
@@ -746,6 +908,9 @@ fn main() {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        DAEMON_STATE.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
         let _ = DestroyWindow(daemon_hwnd);
     }
     unclip_cursor();
