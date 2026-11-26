@@ -1,4 +1,4 @@
-use crate::config::{config_path, Config, CustomZone, Layout, LayoutMode};
+use crate::config::{config_path, Config, CustomZone, GuiTheme, Layout, LayoutMode};
 use crate::hotkeys::HotkeySpec;
 use crate::monitor::{enumerate_monitors, MonitorInfo};
 use eframe::egui::{self, Color32, Pos2, Rect as EguiRect, Sense, Stroke, Vec2};
@@ -11,6 +11,326 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 const SETTINGS_TITLE: &str = "ZoneSnap \u{2014} Settings & Zone Editor";
+const REPO_URL: &str = "https://github.com/PlatyLord/zonesnap-rs";
+
+fn parse_gui_scale_input(s: &str) -> Option<f64> {
+    let cleaned = s.trim().trim_end_matches('%').trim();
+    let v = cleaned.parse::<f64>().ok()?;
+    if !v.is_finite() || v <= 0.0 {
+        return None;
+    }
+    Some(if v > 3.0 { v / 100.0 } else { v })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ThemePalette {
+    dark_mode: bool,
+    panel_bg: Color32,
+    surface_bg: Color32,
+    extreme_bg: Color32,
+    widget_bg: Color32,
+    widget_hovered: Color32,
+    widget_active: Color32,
+    border: Color32,
+    text: Color32,
+    muted_text: Color32,
+    accent: Color32,
+    accent_text: Color32,
+    warn: Color32,
+    success: Color32,
+    error: Color32,
+    canvas_bg: Color32,
+    canvas_grid: Color32,
+    canvas_label: Color32,
+    canvas_label_active: Color32,
+    trigger_accent: Color32,
+    trigger_text: Color32,
+}
+
+fn theme_palette(theme: GuiTheme) -> ThemePalette {
+    match theme {
+        GuiTheme::Dark => ThemePalette {
+            dark_mode: true,
+            panel_bg: Color32::from_rgb(20, 24, 33),
+            surface_bg: Color32::from_rgb(28, 33, 46),
+            extreme_bg: Color32::from_rgb(13, 17, 25),
+            widget_bg: Color32::from_rgb(38, 45, 61),
+            widget_hovered: Color32::from_rgb(51, 61, 82),
+            widget_active: Color32::from_rgb(63, 75, 100),
+            border: Color32::from_rgb(71, 85, 105),
+            text: Color32::from_rgb(226, 232, 240),
+            muted_text: Color32::from_rgb(148, 163, 184),
+            accent: Color32::from_rgb(56, 189, 248),
+            accent_text: Color32::from_rgb(15, 23, 42),
+            warn: Color32::from_rgb(251, 191, 36),
+            success: Color32::from_rgb(34, 197, 94),
+            error: Color32::from_rgb(239, 68, 68),
+            canvas_bg: Color32::from_rgb(15, 23, 42),
+            canvas_grid: Color32::from_rgba_unmultiplied(203, 213, 225, 65),
+            canvas_label: Color32::from_rgb(203, 213, 225),
+            canvas_label_active: Color32::WHITE,
+            trigger_accent: Color32::from_rgb(245, 158, 11),
+            trigger_text: Color32::from_rgb(254, 243, 199),
+        },
+        GuiTheme::Light => ThemePalette {
+            dark_mode: false,
+            panel_bg: Color32::from_rgb(241, 245, 249),
+            surface_bg: Color32::from_rgb(248, 250, 252),
+            extreme_bg: Color32::WHITE,
+            widget_bg: Color32::from_rgb(226, 232, 240),
+            widget_hovered: Color32::from_rgb(203, 213, 225),
+            widget_active: Color32::from_rgb(186, 200, 216),
+            border: Color32::from_rgb(148, 163, 184),
+            text: Color32::from_rgb(15, 23, 42),
+            muted_text: Color32::from_rgb(71, 85, 105),
+            accent: Color32::from_rgb(2, 132, 199),
+            accent_text: Color32::WHITE,
+            warn: Color32::from_rgb(180, 83, 9),
+            success: Color32::from_rgb(21, 128, 61),
+            error: Color32::from_rgb(185, 28, 28),
+            canvas_bg: Color32::from_rgb(226, 232, 240),
+            canvas_grid: Color32::from_rgba_unmultiplied(51, 65, 85, 55),
+            canvas_label: Color32::from_rgb(51, 65, 85),
+            canvas_label_active: Color32::from_rgb(15, 23, 42),
+            trigger_accent: Color32::from_rgb(217, 119, 6),
+            trigger_text: Color32::from_rgb(120, 53, 15),
+        },
+        GuiTheme::CatppuccinMocha => ThemePalette {
+            dark_mode: true,
+            panel_bg: Color32::from_rgb(30, 30, 46),
+            surface_bg: Color32::from_rgb(24, 24, 37),
+            extreme_bg: Color32::from_rgb(17, 17, 27),
+            widget_bg: Color32::from_rgb(49, 50, 68),
+            widget_hovered: Color32::from_rgb(69, 71, 90),
+            widget_active: Color32::from_rgb(88, 91, 112),
+            border: Color32::from_rgb(108, 112, 134),
+            text: Color32::from_rgb(205, 214, 244),
+            muted_text: Color32::from_rgb(166, 173, 200),
+            accent: Color32::from_rgb(203, 166, 247),
+            accent_text: Color32::from_rgb(17, 17, 27),
+            warn: Color32::from_rgb(249, 226, 175),
+            success: Color32::from_rgb(166, 227, 161),
+            error: Color32::from_rgb(243, 139, 168),
+            canvas_bg: Color32::from_rgb(17, 17, 27),
+            canvas_grid: Color32::from_rgba_unmultiplied(166, 173, 200, 60),
+            canvas_label: Color32::from_rgb(186, 194, 222),
+            canvas_label_active: Color32::from_rgb(205, 214, 244),
+            trigger_accent: Color32::from_rgb(250, 179, 135),
+            trigger_text: Color32::from_rgb(249, 226, 175),
+        },
+        GuiTheme::CatppuccinMacchiato => ThemePalette {
+            dark_mode: true,
+            panel_bg: Color32::from_rgb(36, 39, 58),
+            surface_bg: Color32::from_rgb(30, 32, 48),
+            extreme_bg: Color32::from_rgb(24, 25, 38),
+            widget_bg: Color32::from_rgb(54, 58, 79),
+            widget_hovered: Color32::from_rgb(73, 77, 100),
+            widget_active: Color32::from_rgb(91, 96, 120),
+            border: Color32::from_rgb(110, 115, 141),
+            text: Color32::from_rgb(202, 211, 245),
+            muted_text: Color32::from_rgb(165, 173, 203),
+            accent: Color32::from_rgb(198, 160, 246),
+            accent_text: Color32::from_rgb(24, 25, 38),
+            warn: Color32::from_rgb(238, 212, 159),
+            success: Color32::from_rgb(166, 218, 149),
+            error: Color32::from_rgb(237, 135, 150),
+            canvas_bg: Color32::from_rgb(24, 25, 38),
+            canvas_grid: Color32::from_rgba_unmultiplied(165, 173, 203, 60),
+            canvas_label: Color32::from_rgb(184, 192, 224),
+            canvas_label_active: Color32::from_rgb(202, 211, 245),
+            trigger_accent: Color32::from_rgb(245, 169, 127),
+            trigger_text: Color32::from_rgb(238, 212, 159),
+        },
+        GuiTheme::CatppuccinFrappe => ThemePalette {
+            dark_mode: true,
+            panel_bg: Color32::from_rgb(48, 52, 70),
+            surface_bg: Color32::from_rgb(41, 44, 60),
+            extreme_bg: Color32::from_rgb(35, 38, 52),
+            widget_bg: Color32::from_rgb(65, 69, 89),
+            widget_hovered: Color32::from_rgb(81, 87, 109),
+            widget_active: Color32::from_rgb(98, 104, 128),
+            border: Color32::from_rgb(115, 121, 148),
+            text: Color32::from_rgb(198, 208, 245),
+            muted_text: Color32::from_rgb(165, 173, 206),
+            accent: Color32::from_rgb(202, 158, 230),
+            accent_text: Color32::from_rgb(35, 38, 52),
+            warn: Color32::from_rgb(229, 200, 144),
+            success: Color32::from_rgb(166, 209, 137),
+            error: Color32::from_rgb(231, 130, 132),
+            canvas_bg: Color32::from_rgb(35, 38, 52),
+            canvas_grid: Color32::from_rgba_unmultiplied(165, 173, 206, 60),
+            canvas_label: Color32::from_rgb(181, 191, 226),
+            canvas_label_active: Color32::from_rgb(198, 208, 245),
+            trigger_accent: Color32::from_rgb(239, 159, 118),
+            trigger_text: Color32::from_rgb(229, 200, 144),
+        },
+        GuiTheme::CatppuccinLatte => ThemePalette {
+            dark_mode: false,
+            panel_bg: Color32::from_rgb(239, 241, 245),
+            surface_bg: Color32::from_rgb(230, 233, 239),
+            extreme_bg: Color32::from_rgb(220, 224, 232),
+            widget_bg: Color32::from_rgb(204, 208, 218),
+            widget_hovered: Color32::from_rgb(188, 192, 204),
+            widget_active: Color32::from_rgb(172, 176, 190),
+            border: Color32::from_rgb(140, 143, 161),
+            text: Color32::from_rgb(76, 79, 105),
+            muted_text: Color32::from_rgb(108, 111, 133),
+            accent: Color32::from_rgb(136, 57, 239),
+            accent_text: Color32::WHITE,
+            warn: Color32::from_rgb(223, 142, 29),
+            success: Color32::from_rgb(64, 160, 43),
+            error: Color32::from_rgb(210, 15, 57),
+            canvas_bg: Color32::from_rgb(220, 224, 232),
+            canvas_grid: Color32::from_rgba_unmultiplied(108, 111, 133, 60),
+            canvas_label: Color32::from_rgb(92, 95, 119),
+            canvas_label_active: Color32::from_rgb(76, 79, 105),
+            trigger_accent: Color32::from_rgb(254, 100, 11),
+            trigger_text: Color32::from_rgb(124, 45, 18),
+        },
+        GuiTheme::Nord => ThemePalette {
+            dark_mode: true,
+            panel_bg: Color32::from_rgb(46, 52, 64),
+            surface_bg: Color32::from_rgb(59, 66, 82),
+            extreme_bg: Color32::from_rgb(36, 41, 51),
+            widget_bg: Color32::from_rgb(67, 76, 94),
+            widget_hovered: Color32::from_rgb(76, 86, 106),
+            widget_active: Color32::from_rgb(94, 106, 129),
+            border: Color32::from_rgb(97, 110, 136),
+            text: Color32::from_rgb(236, 239, 244),
+            muted_text: Color32::from_rgb(216, 222, 233),
+            accent: Color32::from_rgb(136, 192, 208),
+            accent_text: Color32::from_rgb(46, 52, 64),
+            warn: Color32::from_rgb(235, 203, 139),
+            success: Color32::from_rgb(163, 190, 140),
+            error: Color32::from_rgb(191, 97, 106),
+            canvas_bg: Color32::from_rgb(36, 41, 51),
+            canvas_grid: Color32::from_rgba_unmultiplied(216, 222, 233, 55),
+            canvas_label: Color32::from_rgb(216, 222, 233),
+            canvas_label_active: Color32::from_rgb(236, 239, 244),
+            trigger_accent: Color32::from_rgb(208, 135, 112),
+            trigger_text: Color32::from_rgb(235, 203, 139),
+        },
+        GuiTheme::TokyoNight => ThemePalette {
+            dark_mode: true,
+            panel_bg: Color32::from_rgb(26, 27, 38),
+            surface_bg: Color32::from_rgb(36, 40, 59),
+            extreme_bg: Color32::from_rgb(22, 22, 30),
+            widget_bg: Color32::from_rgb(41, 46, 66),
+            widget_hovered: Color32::from_rgb(59, 66, 97),
+            widget_active: Color32::from_rgb(84, 92, 126),
+            border: Color32::from_rgb(86, 95, 137),
+            text: Color32::from_rgb(192, 202, 245),
+            muted_text: Color32::from_rgb(169, 177, 214),
+            accent: Color32::from_rgb(122, 162, 247),
+            accent_text: Color32::from_rgb(22, 22, 30),
+            warn: Color32::from_rgb(224, 175, 104),
+            success: Color32::from_rgb(158, 206, 106),
+            error: Color32::from_rgb(247, 118, 142),
+            canvas_bg: Color32::from_rgb(22, 22, 30),
+            canvas_grid: Color32::from_rgba_unmultiplied(169, 177, 214, 55),
+            canvas_label: Color32::from_rgb(169, 177, 214),
+            canvas_label_active: Color32::from_rgb(192, 202, 245),
+            trigger_accent: Color32::from_rgb(255, 158, 100),
+            trigger_text: Color32::from_rgb(224, 175, 104),
+        },
+        GuiTheme::GruvboxDark => ThemePalette {
+            dark_mode: true,
+            panel_bg: Color32::from_rgb(40, 40, 40),
+            surface_bg: Color32::from_rgb(50, 48, 47),
+            extreme_bg: Color32::from_rgb(29, 32, 33),
+            widget_bg: Color32::from_rgb(60, 56, 54),
+            widget_hovered: Color32::from_rgb(80, 73, 69),
+            widget_active: Color32::from_rgb(102, 92, 84),
+            border: Color32::from_rgb(124, 111, 100),
+            text: Color32::from_rgb(235, 219, 178),
+            muted_text: Color32::from_rgb(189, 174, 147),
+            accent: Color32::from_rgb(250, 189, 47),
+            accent_text: Color32::from_rgb(29, 32, 33),
+            warn: Color32::from_rgb(254, 128, 25),
+            success: Color32::from_rgb(184, 187, 38),
+            error: Color32::from_rgb(251, 73, 52),
+            canvas_bg: Color32::from_rgb(29, 32, 33),
+            canvas_grid: Color32::from_rgba_unmultiplied(213, 196, 161, 55),
+            canvas_label: Color32::from_rgb(213, 196, 161),
+            canvas_label_active: Color32::from_rgb(251, 241, 199),
+            trigger_accent: Color32::from_rgb(254, 128, 25),
+            trigger_text: Color32::from_rgb(250, 189, 47),
+        },
+        GuiTheme::SolarizedLight => ThemePalette {
+            dark_mode: false,
+            panel_bg: Color32::from_rgb(253, 246, 227),
+            surface_bg: Color32::from_rgb(238, 232, 213),
+            extreme_bg: Color32::from_rgb(255, 250, 236),
+            widget_bg: Color32::from_rgb(230, 223, 202),
+            widget_hovered: Color32::from_rgb(214, 207, 185),
+            widget_active: Color32::from_rgb(198, 191, 170),
+            border: Color32::from_rgb(147, 161, 161),
+            text: Color32::from_rgb(88, 110, 117),
+            muted_text: Color32::from_rgb(131, 148, 150),
+            accent: Color32::from_rgb(38, 139, 210),
+            accent_text: Color32::from_rgb(253, 246, 227),
+            warn: Color32::from_rgb(181, 137, 0),
+            success: Color32::from_rgb(133, 153, 0),
+            error: Color32::from_rgb(220, 50, 47),
+            canvas_bg: Color32::from_rgb(238, 232, 213),
+            canvas_grid: Color32::from_rgba_unmultiplied(88, 110, 117, 55),
+            canvas_label: Color32::from_rgb(88, 110, 117),
+            canvas_label_active: Color32::from_rgb(7, 54, 66),
+            trigger_accent: Color32::from_rgb(203, 75, 22),
+            trigger_text: Color32::from_rgb(124, 45, 18),
+        },
+    }
+}
+
+fn apply_theme(ctx: &egui::Context, theme: GuiTheme) {
+    let p = theme_palette(theme);
+    let mut visuals = if p.dark_mode {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
+
+    visuals.window_fill = p.panel_bg;
+    visuals.panel_fill = p.panel_bg;
+    visuals.faint_bg_color = p.surface_bg;
+    visuals.extreme_bg_color = p.extreme_bg;
+    visuals.override_text_color = Some(p.text);
+    visuals.hyperlink_color = p.accent;
+    visuals.warn_fg_color = p.warn;
+    visuals.error_fg_color = p.error;
+
+    let sel_alpha = if p.dark_mode { 75 } else { 55 };
+    visuals.selection.bg_fill =
+        Color32::from_rgba_unmultiplied(p.accent.r(), p.accent.g(), p.accent.b(), sel_alpha);
+    visuals.selection.stroke = Stroke::new(1.0_f32, p.accent);
+
+    visuals.widgets.noninteractive.bg_fill = p.surface_bg;
+    visuals.widgets.noninteractive.weak_bg_fill = p.surface_bg;
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, p.border);
+    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, p.text);
+
+    visuals.widgets.inactive.bg_fill = p.widget_bg;
+    visuals.widgets.inactive.weak_bg_fill = p.widget_bg;
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, p.border);
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, p.text);
+
+    visuals.widgets.hovered.bg_fill = p.widget_hovered;
+    visuals.widgets.hovered.weak_bg_fill = p.widget_hovered;
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, p.accent);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.5_f32, p.text);
+
+    visuals.widgets.active.bg_fill = p.widget_active;
+    visuals.widgets.active.weak_bg_fill = p.widget_active;
+    visuals.widgets.active.bg_stroke = Stroke::new(1.5_f32, p.accent);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.5_f32, p.text);
+
+    visuals.widgets.open.bg_fill = p.widget_hovered;
+    visuals.widgets.open.weak_bg_fill = p.widget_hovered;
+    visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, p.accent);
+    visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, p.text);
+
+    ctx.set_visuals(visuals);
+}
 
 struct MutexGuard(HANDLE);
 impl Drop for MutexGuard {
@@ -82,6 +402,9 @@ struct SettingsApp {
     snap_1pct: bool,
     tab: SettingsTab,
     new_excluded_app: String,
+    applied_gui_scale: f32,
+    applied_theme: Option<GuiTheme>,
+    about_icon_tex: Option<egui::TextureHandle>,
     status_msg: Option<String>,
     status_is_error: bool,
     reload_msg: u32,
@@ -103,6 +426,7 @@ impl SettingsApp {
             .map(|p| p.active_layout_index)
             .unwrap_or(0);
 
+        let applied_gui_scale = config.appearance.gui_scale.clamp(0.85, 1.75);
         let saved_config = config.clone();
         Self {
             config,
@@ -116,6 +440,9 @@ impl SettingsApp {
             snap_1pct: true,
             tab: SettingsTab::Layouts,
             new_excluded_app: String::new(),
+            applied_gui_scale,
+            applied_theme: None,
+            about_icon_tex: None,
             status_msg: None,
             status_is_error: false,
             reload_msg,
@@ -184,6 +511,8 @@ impl SettingsApp {
             .map(|p| p.active_layout_index)
             .unwrap_or(0);
         self.selected_zone_idx = Some(0);
+        self.applied_gui_scale = self.config.appearance.gui_scale.clamp(0.85, 1.75);
+        self.applied_theme = None;
         self.status_msg = Some("Reloaded configuration from zones.json.".to_string());
     }
 
@@ -301,6 +630,7 @@ impl SettingsApp {
             .map(|(k, p)| (k.clone(), format!("{} ({}x{})", p.device_name, p.width, p.height)))
             .collect();
 
+        let palette = theme_palette(self.config.appearance.gui_theme);
         let Some(prof) = self.config.monitors.get_mut(&self.selected_monitor_key) else {
             return;
         };
@@ -340,7 +670,7 @@ impl SettingsApp {
                 self.selected_zone_idx = Some(0);
             }
 
-            ui.colored_label(Color32::from_rgb(56, 189, 248), "★ Active");
+            ui.colored_label(palette.accent, "★ Active");
             if ui.button("Duplicate").clicked() {
                 duplicate_layout = true;
             }
@@ -440,10 +770,11 @@ impl SettingsApp {
             h = max_h;
             w = h * aspect;
         }
+        let palette = theme_palette(self.config.appearance.gui_theme);
         let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
         let p = ui.painter_at(rect);
-        p.rect_filled(rect, 4.0, Color32::from_rgb(18, 24, 38));
-        p.rect_stroke(rect, 4.0, Stroke::new(1.5_f32, Color32::from_rgb(71, 85, 105)));
+        p.rect_filled(rect, 4.0, palette.canvas_bg);
+        p.rect_stroke(rect, 4.0, Stroke::new(1.5_f32, palette.border));
 
         let hi = self.config.appearance.highlight_color;
         let fill = Color32::from_rgba_unmultiplied(hi[0], hi[1], hi[2], 70);
@@ -459,14 +790,14 @@ impl SettingsApp {
             let x = rect.left() + rect.width() * (c as f32 / cols as f32);
             p.line_segment(
                 [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
-                Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(203, 213, 225, 65)),
+                Stroke::new(1.0_f32, palette.canvas_grid),
             );
         }
         for r in 1..rows {
             let y = rect.top() + rect.height() * (r as f32 / rows as f32);
             p.line_segment(
                 [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-                Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(203, 213, 225, 65)),
+                Stroke::new(1.0_f32, palette.canvas_grid),
             );
         }
 
@@ -852,12 +1183,13 @@ impl SettingsApp {
         }
 
         // Paint canvas
+        let palette = theme_palette(self.config.appearance.gui_theme);
         let p = ui.painter_at(canvas_rect);
-        p.rect_filled(canvas_rect, 4.0, Color32::from_rgb(15, 23, 42));
+        p.rect_filled(canvas_rect, 4.0, palette.canvas_bg);
         p.rect_stroke(
             canvas_rect,
             4.0,
-            Stroke::new(1.5_f32, Color32::from_rgb(71, 85, 105)),
+            Stroke::new(1.5_f32, palette.border),
         );
 
         let hi = self.config.appearance.highlight_color;
@@ -868,12 +1200,17 @@ impl SettingsApp {
             let fill = if is_sel {
                 Color32::from_rgba_unmultiplied(hi[0], hi[1], hi[2], 95)
             } else {
-                Color32::from_rgba_unmultiplied(148, 163, 184, 36)
+                Color32::from_rgba_unmultiplied(
+                    palette.muted_text.r(),
+                    palette.muted_text.g(),
+                    palette.muted_text.b(),
+                    36,
+                )
             };
             let stroke = if is_sel {
                 Stroke::new(2.0_f32, Color32::from_rgb(bd[0], bd[1], bd[2]))
             } else {
-                Stroke::new(1.0_f32, Color32::from_rgb(148, 163, 184))
+                Stroke::new(1.0_f32, palette.border)
             };
             p.rect_filled(sr, 2.0, fill);
             p.rect_stroke(sr, 2.0, stroke);
@@ -887,28 +1224,33 @@ impl SettingsApp {
                 label,
                 egui::FontId::proportional(13.0),
                 if is_sel {
-                    Color32::WHITE
+                    palette.canvas_label_active
                 } else {
-                    Color32::from_rgb(203, 213, 225)
+                    palette.canvas_label
                 },
             );
 
             if let Some(tr) = z.trigger {
                 let tr_rect = to_screen(tr).shrink(1.0);
-                let amber = Color32::from_rgb(245, 158, 11);
-                let tr_fill = Color32::from_rgba_unmultiplied(245, 158, 11, if is_sel { 85 } else { 52 });
+                let tr_col = palette.trigger_accent;
+                let tr_fill = Color32::from_rgba_unmultiplied(
+                    tr_col.r(),
+                    tr_col.g(),
+                    tr_col.b(),
+                    if is_sel { 85 } else { 52 },
+                );
                 p.rect_filled(tr_rect, 2.0, tr_fill);
                 p.rect_stroke(
                     tr_rect,
                     2.0,
-                    Stroke::new(if is_sel { 2.0_f32 } else { 1.5_f32 }, amber),
+                    Stroke::new(if is_sel { 2.0_f32 } else { 1.5_f32 }, tr_col),
                 );
                 p.text(
                     tr_rect.center(),
                     egui::Align2::CENTER_CENTER,
                     format!("Trigger {}", i + 1),
                     egui::FontId::proportional(11.5),
-                    Color32::from_rgb(254, 243, 199),
+                    palette.trigger_text,
                 );
             }
 
@@ -920,7 +1262,7 @@ impl SettingsApp {
                 };
                 let raw_sr = to_screen(handle_rect);
                 let handle_col = if self.zone_edit_target == ZoneEditTarget::Trigger {
-                    Color32::from_rgb(245, 158, 11)
+                    palette.trigger_accent
                 } else {
                     Color32::from_rgb(bd[0], bd[1], bd[2])
                 };
@@ -947,7 +1289,7 @@ impl SettingsApp {
                 0.0,
                 Color32::from_rgba_unmultiplied(hi[0], hi[1], hi[2], 70),
             );
-            p.rect_stroke(dr, 0.0, Stroke::new(1.5_f32, Color32::WHITE));
+            p.rect_stroke(dr, 0.0, Stroke::new(1.5_f32, palette.canvas_label_active));
         }
 
         // Custom Trigger toggle & numeric fine-tuning row for selected zone
@@ -1148,6 +1490,7 @@ impl SettingsApp {
                                 .weak(),
                         );
                     });
+                    let warn_col = theme_palette(self.config.appearance.gui_theme).warn;
                     if self
                         .config
                         .hotkeys
@@ -1155,7 +1498,7 @@ impl SettingsApp {
                         .eq_ignore_ascii_case(&self.config.hotkeys.monitor_lock_modifier)
                     {
                         ui.colored_label(
-                            Color32::from_rgb(251, 191, 36),
+                            warn_col,
                             "Warning: Move/Resize and Monitor-Lock modifiers are set to the same key.",
                         );
                     }
@@ -1171,7 +1514,7 @@ impl SettingsApp {
                             .eq_ignore_ascii_case(&self.config.hotkeys.corner_resize_modifier)
                     {
                         ui.colored_label(
-                            Color32::from_rgb(251, 191, 36),
+                            warn_col,
                             "Warning: Move/Resize and Nearest-Corner Resize modifiers are set to the same key.",
                         );
                     }
@@ -1291,178 +1634,329 @@ impl SettingsApp {
             });
     }
 
-    fn render_about_tab(&self, ui: &mut egui::Ui) {
-        ui.heading(format!("ZoneSnap v{}", env!("CARGO_PKG_VERSION")));
-        ui.label(
-            "Lightweight, single-binary portable Windows window-snapping and window-management utility.",
-        );
-        ui.add_space(10.0);
+    fn render_about_tab(&mut self, ui: &mut egui::Ui) {
+        let palette = theme_palette(self.config.appearance.gui_theme);
+        if self.about_icon_tex.is_none() {
+            let rgba = crate::icon::app_icon_rgba(64);
+            let img = egui::ColorImage::from_rgba_unmultiplied([64, 64], &rgba);
+            self.about_icon_tex = Some(ui.ctx().load_texture(
+                "about_app_icon",
+                img,
+                egui::TextureOptions::LINEAR,
+            ));
+        }
 
-        ui.group(|ui| {
-            ui.label(egui::RichText::new("Credits").strong());
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.strong("Author:");
-                ui.label("Tom (PlatyLord)");
+        let path_str = config_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "zones.json".to_string());
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_space(12.0);
+                let avail_w = ui.available_width();
+                let card_w = (avail_w - 32.0).clamp(320.0, 560.0);
+                let pad_x = ((avail_w - card_w) * 0.5).max(0.0);
+
+                ui.horizontal(|ui| {
+                    ui.add_space(pad_x);
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(card_w, 0.0),
+                        egui::Layout::top_down(egui::Align::Center),
+                        |ui| {
+                            if let Some(tex) = &self.about_icon_tex {
+                                ui.image((tex.id(), Vec2::splat(56.0)));
+                                ui.add_space(8.0);
+                            }
+
+                            ui.label(egui::RichText::new("ZoneSnap").size(24.0).strong());
+                            ui.add_space(4.0);
+
+                            egui::Frame::none()
+                                .fill(palette.widget_bg)
+                                .stroke(Stroke::new(1.0_f32, palette.accent))
+                                .rounding(12.0)
+                                .inner_margin(egui::Margin::symmetric(12.0, 3.0))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "v{}",
+                                            env!("CARGO_PKG_VERSION")
+                                        ))
+                                        .small()
+                                        .strong()
+                                        .color(palette.accent),
+                                    );
+                                });
+
+                            ui.add_space(6.0);
+                            ui.label(
+                                egui::RichText::new(
+                                    "Lightweight, single-binary portable Windows window-snapping and window-management utility.",
+                                )
+                                .color(palette.muted_text),
+                            );
+
+                            ui.add_space(14.0);
+
+                            let about_card = |ui: &mut egui::Ui, add_contents: &dyn Fn(&mut egui::Ui)| {
+                                egui::Frame::group(ui.style())
+                                    .fill(palette.surface_bg)
+                                    .stroke(Stroke::new(1.0_f32, palette.border))
+                                    .rounding(8.0)
+                                    .inner_margin(egui::Margin::symmetric(18.0, 12.0))
+                                    .show(ui, |ui| {
+                                        ui.set_width((card_w - 36.0).max(200.0));
+                                        ui.with_layout(
+                                            egui::Layout::top_down(egui::Align::Center),
+                                            |ui| add_contents(ui),
+                                        );
+                                    });
+                            };
+
+                            about_card(ui, &|ui| {
+                                ui.label(egui::RichText::new("CREDITS").small().strong().color(palette.muted_text));
+                                ui.add_space(4.0);
+                                ui.label(egui::RichText::new("Author: Tom (PlatyLord)").strong());
+                                ui.label("Co-Built With: Antigravity (Google DeepMind)");
+                            });
+
+                            ui.add_space(10.0);
+
+                            about_card(ui, &|ui| {
+                                ui.label(egui::RichText::new("LICENSE").small().strong().color(palette.muted_text));
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new("GNU General Public License v3.0 (GPL-3.0)")
+                                        .strong()
+                                        .color(palette.accent),
+                                );
+                                ui.add_space(2.0);
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Free to use, modify, and fork; derivative works must also be released under GPL-3.0. Provided as-is with no warranty.",
+                                    )
+                                    .small()
+                                    .color(palette.muted_text),
+                                );
+                            });
+
+                            ui.add_space(10.0);
+
+                            about_card(ui, &|ui| {
+                                ui.label(egui::RichText::new("PORTABILITY & PROJECT").small().strong().color(palette.muted_text));
+                                ui.add_space(4.0);
+                                ui.label(egui::RichText::new(&path_str).monospace().small());
+                                ui.add_space(2.0);
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Zero installer, zero external DLL dependencies, and zero %APPDATA% or Windows Registry writes.",
+                                    )
+                                    .small()
+                                    .color(palette.muted_text),
+                                );
+                                ui.add_space(4.0);
+                                ui.hyperlink_to("github.com/PlatyLord/zonesnap-rs", REPO_URL);
+                            });
+
+                            ui.add_space(12.0);
+                        },
+                    );
+                });
             });
-            ui.horizontal(|ui| {
-                ui.strong("Co-Built With:");
-                ui.label("Antigravity (Google DeepMind)");
-            });
-        });
-
-        ui.add_space(8.0);
-        ui.group(|ui| {
-            ui.label(egui::RichText::new("License").strong());
-            ui.add_space(4.0);
-            ui.label("GNU General Public License v3.0 (GPL-3.0)");
-            ui.label(
-                egui::RichText::new(
-                    "Free to use, modify, and fork; derivative works must also be released under GPL-3.0. Provided as-is with no warranty.",
-                )
-                .small()
-                .weak(),
-            );
-        });
-
-        ui.add_space(8.0);
-        ui.group(|ui| {
-            ui.label(egui::RichText::new("Portability & Runtime Info").strong());
-            ui.add_space(4.0);
-            let path_str = config_path()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "zones.json".to_string());
-            ui.label(format!("Configuration file: {path_str}"));
-            ui.label(
-                egui::RichText::new(
-                    "Zero installer, zero external DLL dependencies, and zero %APPDATA% or Windows Registry writes.",
-                )
-                .small()
-                .weak(),
-            );
-        });
     }
 
     fn render_appearance_tab(&mut self, ui: &mut egui::Ui) {
-        ui.group(|ui| {
-            ui.label(egui::RichText::new("Overlay Visual Style").strong());
-            ui.horizontal(|ui| {
-                ui.label("Highlight Fill Color:");
-                ui.color_edit_button_srgb(&mut self.config.appearance.highlight_color);
-                ui.add_space(20.0);
-                ui.label("Border Color:");
-                ui.color_edit_button_srgb(&mut self.config.appearance.border_color);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Highlight Opacity:");
-                ui.add(egui::Slider::new(
-                    &mut self.config.appearance.highlight_opacity,
-                    0.05..=0.85,
-                ));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Zone Background Opacity:");
-                ui.add(egui::Slider::new(
-                    &mut self.config.appearance.zone_bg_opacity,
-                    0.0..=0.50,
-                ));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Settings Window Text Scale:");
-                ui.add(
-                    egui::Slider::new(&mut self.config.appearance.gui_scale, 0.85..=1.75)
-                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-                );
-                if ui.button("Reset 100%").clicked() {
-                    self.config.appearance.gui_scale = 1.0;
-                }
-                ui.label(
-                    egui::RichText::new("(Also Ctrl+ / Ctrl- / Ctrl+0)")
-                        .small()
-                        .weak(),
-                );
-            });
-        });
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Settings Window Theme & Scaling").strong());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Theme:");
+                        egui::ComboBox::from_id_salt("gui_theme_select")
+                            .selected_text(self.config.appearance.gui_theme.label())
+                            .show_ui(ui, |ui| {
+                                for &t in GuiTheme::ALL {
+                                    ui.selectable_value(
+                                        &mut self.config.appearance.gui_theme,
+                                        t,
+                                        t.label(),
+                                    );
+                                }
+                            });
 
-        ui.add_space(8.0);
-        ui.group(|ui| {
-            ui.label(egui::RichText::new("Window Behavior").strong());
-            ui.checkbox(
-                &mut self.config.behavior.restore_on_unsnap,
-                "Restore original window size when dragging a snapped window away (unsnap)",
-            );
-            ui.checkbox(
-                &mut self.config.behavior.drag_top_maximize,
-                "Maximize window when Alt-dragging to the top edge of a monitor",
-            );
-        });
+                        let (quick_label, quick_target) = match self.config.appearance.gui_theme {
+                            GuiTheme::CatppuccinMocha
+                            | GuiTheme::CatppuccinMacchiato
+                            | GuiTheme::CatppuccinFrappe => ("Switch to Latte", GuiTheme::CatppuccinLatte),
+                            GuiTheme::CatppuccinLatte => ("Switch to Mocha", GuiTheme::CatppuccinMocha),
+                            t if t.is_light() => ("Switch to Dark", GuiTheme::Dark),
+                            _ => ("Switch to Light", GuiTheme::Light),
+                        };
+                        if ui.button(quick_label).clicked() {
+                            self.config.appearance.gui_theme = quick_target;
+                        }
+                        if ui.button("Match Overlay Colors").clicked() {
+                            let (hi, bd) = self.config.appearance.gui_theme.recommended_overlay_rgb();
+                            self.config.appearance.highlight_color = hi;
+                            self.config.appearance.border_color = bd;
+                        }
+                    });
 
-        ui.add_space(8.0);
-        ui.group(|ui| {
-            ui.label(egui::RichText::new("Excluded Applications (excluded_apps)").strong());
-            ui.label(
-                egui::RichText::new("Mouse hooks pass through untouched for these process executables.")
-                    .small()
-                    .weak(),
-            );
-            ui.horizontal(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.new_excluded_app)
-                        .hint_text("e.g. game.exe")
-                        .desired_width(220.0),
-                );
-                if ui.button("Add").clicked() {
-                    let norm = self.new_excluded_app.trim().to_ascii_lowercase();
-                    if !norm.is_empty()
-                        && !self
-                            .config
-                            .behavior
-                            .excluded_apps
-                            .iter()
-                            .any(|x| x.eq_ignore_ascii_case(&norm))
-                    {
-                        self.config.behavior.excluded_apps.push(norm);
-                    }
-                    self.new_excluded_app.clear();
-                }
-            });
-
-            ui.add_space(4.0);
-            let mut remove_idx: Option<usize> = None;
-            egui::ScrollArea::vertical()
-                .max_height(180.0)
-                .show(ui, |ui| {
-                    for (i, app) in self.config.behavior.excluded_apps.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            if ui.small_button("Remove").clicked() {
-                                remove_idx = Some(i);
+                    ui.add_space(2.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Settings Window Text Scale:");
+                        let slider_resp = ui.add(
+                            egui::Slider::new(&mut self.config.appearance.gui_scale, 0.85..=1.75)
+                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
+                                .custom_parser(parse_gui_scale_input),
+                        );
+                        let pointer_down = ui.input(|i| i.pointer.any_down());
+                        let editing_text = ui.ctx().wants_keyboard_input();
+                        if !slider_resp.dragged() && !pointer_down && !editing_text {
+                            let target = self.config.appearance.gui_scale.clamp(0.85, 1.75);
+                            if (self.applied_gui_scale - target).abs() > 0.001 {
+                                self.applied_gui_scale = target;
                             }
-                            ui.label(app);
+                        }
+                        if ui.button("Reset 100%").clicked() {
+                            self.config.appearance.gui_scale = 1.0;
+                            self.applied_gui_scale = 1.0;
+                        }
+                        if (self.applied_gui_scale - self.config.appearance.gui_scale.clamp(0.85, 1.75)).abs() > 0.001 {
+                            ui.label(
+                                egui::RichText::new("(release to apply)")
+                                    .small()
+                                    .weak(),
+                            );
+                        } else {
+                            ui.label(
+                                egui::RichText::new("(Type e.g. 125 or Ctrl+ / Ctrl- / Ctrl+0)")
+                                    .small()
+                                    .weak(),
+                            );
+                        }
+                    });
+                });
+
+                ui.add_space(8.0);
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Overlay Visual Style").strong());
+                    ui.horizontal(|ui| {
+                        ui.label("Highlight Fill Color:");
+                        ui.color_edit_button_srgb(&mut self.config.appearance.highlight_color);
+                        ui.add_space(20.0);
+                        ui.label("Border Color:");
+                        ui.color_edit_button_srgb(&mut self.config.appearance.border_color);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Highlight Opacity:");
+                        ui.add(egui::Slider::new(
+                            &mut self.config.appearance.highlight_opacity,
+                            0.05..=0.85,
+                        ));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Zone Background Opacity:");
+                        ui.add(egui::Slider::new(
+                            &mut self.config.appearance.zone_bg_opacity,
+                            0.0..=0.50,
+                        ));
+                    });
+                });
+
+                ui.add_space(8.0);
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Window Behavior").strong());
+                    ui.checkbox(
+                        &mut self.config.behavior.restore_on_unsnap,
+                        "Restore original window size when dragging a snapped window away (unsnap)",
+                    );
+                    ui.checkbox(
+                        &mut self.config.behavior.drag_top_maximize,
+                        "Maximize window when Alt-dragging to the top edge of a monitor",
+                    );
+                });
+
+                ui.add_space(8.0);
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Excluded Applications (excluded_apps)").strong());
+                    ui.label(
+                        egui::RichText::new("Mouse hooks pass through untouched for these process executables.")
+                            .small()
+                            .weak(),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.new_excluded_app)
+                                .hint_text("e.g. game.exe")
+                                .desired_width(220.0),
+                        );
+                        if ui.button("Add").clicked() {
+                            let norm = self.new_excluded_app.trim().to_ascii_lowercase();
+                            if !norm.is_empty()
+                                && !self
+                                    .config
+                                    .behavior
+                                    .excluded_apps
+                                    .iter()
+                                    .any(|x| x.eq_ignore_ascii_case(&norm))
+                            {
+                                self.config.behavior.excluded_apps.push(norm);
+                            }
+                            self.new_excluded_app.clear();
+                        }
+                    });
+
+                    ui.add_space(4.0);
+                    let mut remove_idx: Option<usize> = None;
+                    egui::ScrollArea::vertical()
+                        .max_height(180.0)
+                        .show(ui, |ui| {
+                            for (i, app) in self.config.behavior.excluded_apps.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    if ui.small_button("Remove").clicked() {
+                                        remove_idx = Some(i);
+                                    }
+                                    ui.label(app);
+                                });
+                            }
                         });
+                    if let Some(idx) = remove_idx {
+                        self.config.behavior.excluded_apps.remove(idx);
                     }
                 });
-            if let Some(idx) = remove_idx {
-                self.config.behavior.excluded_apps.remove(idx);
-            }
-        });
+            });
     }
 }
 
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.applied_theme != Some(self.config.appearance.gui_theme) {
+            apply_theme(ctx, self.config.appearance.gui_theme);
+            self.applied_theme = Some(self.config.appearance.gui_theme);
+        }
+        let palette = theme_palette(self.config.appearance.gui_theme);
+
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S)) {
             self.save_and_notify_daemon();
         }
         if ctx.input(|i| i.modifiers.ctrl && (i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals))) {
-            self.config.appearance.gui_scale = (self.config.appearance.gui_scale + 0.05).clamp(0.85, 1.75);
+            let next = (self.config.appearance.gui_scale + 0.05).clamp(0.85, 1.75);
+            self.config.appearance.gui_scale = next;
+            self.applied_gui_scale = next;
         }
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Minus)) {
-            self.config.appearance.gui_scale = (self.config.appearance.gui_scale - 0.05).clamp(0.85, 1.75);
+            let next = (self.config.appearance.gui_scale - 0.05).clamp(0.85, 1.75);
+            self.config.appearance.gui_scale = next;
+            self.applied_gui_scale = next;
         }
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Num0)) {
             self.config.appearance.gui_scale = 1.0;
+            self.applied_gui_scale = 1.0;
         }
-        ctx.set_zoom_factor(self.config.appearance.gui_scale.clamp(0.85, 1.75));
+        ctx.set_zoom_factor(self.applied_gui_scale.clamp(0.85, 1.75));
 
         egui::TopBottomPanel::top("tabs_bar").show(ctx, |ui| {
             ui.add_space(4.0);
@@ -1487,9 +1981,9 @@ impl eframe::App for SettingsApp {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let save_btn = egui::Button::new(
-                    egui::RichText::new("Save & Apply").color(Color32::WHITE).strong(),
+                    egui::RichText::new("Save & Apply").color(palette.accent_text).strong(),
                 )
-                .fill(Color32::from_rgb(2, 132, 199));
+                .fill(palette.accent);
                 if ui.add(save_btn).clicked() {
                     self.save_and_notify_daemon();
                 }
@@ -1502,7 +1996,7 @@ impl eframe::App for SettingsApp {
                 if self.has_unsaved_changes() {
                     ui.add_space(8.0);
                     ui.colored_label(
-                        Color32::from_rgb(251, 191, 36),
+                        palette.warn,
                         "● Unsaved changes (Ctrl+S to save)",
                     );
                 }
@@ -1515,9 +2009,9 @@ impl eframe::App for SettingsApp {
                 if let Some(msg) = &self.status_msg {
                     ui.add_space(12.0);
                     let color = if self.status_is_error {
-                        Color32::from_rgb(239, 68, 68)
+                        palette.error
                     } else {
-                        Color32::from_rgb(34, 197, 94)
+                        palette.success
                     };
                     ui.colored_label(color, msg);
                 }
@@ -1598,9 +2092,36 @@ pub fn run_settings_window(reload_msg: u32) {
                 egui::FontId::proportional(21.0),
             );
             cc.egui_ctx.set_style(style);
+            apply_theme(&cc.egui_ctx, config.appearance.gui_theme);
             cc.egui_ctx
                 .set_zoom_factor(config.appearance.gui_scale.clamp(0.85, 1.75));
             Ok(Box::new(SettingsApp::new(config, monitors, reload_msg)))
         }),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gui_scale_parser_accepts_percentages_and_decimals() {
+        assert_eq!(parse_gui_scale_input("120"), Some(1.2));
+        assert_eq!(parse_gui_scale_input("120%"), Some(1.2));
+        assert_eq!(parse_gui_scale_input(" 150 % "), Some(1.5));
+        assert_eq!(parse_gui_scale_input("1.25"), Some(1.25));
+        assert_eq!(parse_gui_scale_input("85%"), Some(0.85));
+        assert_eq!(parse_gui_scale_input(""), None);
+        assert_eq!(parse_gui_scale_input("abc"), None);
+        assert_eq!(parse_gui_scale_input("-10"), None);
+    }
+
+    #[test]
+    fn all_themes_match_light_dark_polarity() {
+        assert_eq!(GuiTheme::ALL.len(), 10);
+        for &theme in GuiTheme::ALL {
+            let p = theme_palette(theme);
+            assert_eq!(p.dark_mode, !theme.is_light(), "mismatch for {:?}", theme);
+        }
+    }
 }

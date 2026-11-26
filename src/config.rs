@@ -86,6 +86,74 @@ pub struct Layout {
     pub mode: LayoutMode,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GuiTheme {
+    #[default]
+    Dark,
+    Light,
+    CatppuccinMocha,
+    CatppuccinMacchiato,
+    CatppuccinFrappe,
+    CatppuccinLatte,
+    Nord,
+    TokyoNight,
+    GruvboxDark,
+    SolarizedLight,
+}
+
+impl GuiTheme {
+    pub const ALL: &'static [GuiTheme] = &[
+        GuiTheme::Dark,
+        GuiTheme::Light,
+        GuiTheme::CatppuccinMocha,
+        GuiTheme::CatppuccinMacchiato,
+        GuiTheme::CatppuccinFrappe,
+        GuiTheme::CatppuccinLatte,
+        GuiTheme::Nord,
+        GuiTheme::TokyoNight,
+        GuiTheme::GruvboxDark,
+        GuiTheme::SolarizedLight,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GuiTheme::Dark => "Dark (Default)",
+            GuiTheme::Light => "Light",
+            GuiTheme::CatppuccinMocha => "Catppuccin Mocha (Dark)",
+            GuiTheme::CatppuccinMacchiato => "Catppuccin Macchiato (Dark)",
+            GuiTheme::CatppuccinFrappe => "Catppuccin Frappé (Dark)",
+            GuiTheme::CatppuccinLatte => "Catppuccin Latte (Light)",
+            GuiTheme::Nord => "Nord (Dark)",
+            GuiTheme::TokyoNight => "Tokyo Night (Dark)",
+            GuiTheme::GruvboxDark => "Gruvbox Dark",
+            GuiTheme::SolarizedLight => "Solarized Light",
+        }
+    }
+
+    pub fn is_light(self) -> bool {
+        matches!(
+            self,
+            Self::Light | Self::CatppuccinLatte | Self::SolarizedLight
+        )
+    }
+
+    pub fn recommended_overlay_rgb(self) -> ([u8; 3], [u8; 3]) {
+        match self {
+            GuiTheme::Dark => ([56, 189, 248], [56, 189, 248]),
+            GuiTheme::Light => ([2, 132, 199], [2, 132, 199]),
+            GuiTheme::CatppuccinMocha => ([203, 166, 247], [180, 190, 254]),
+            GuiTheme::CatppuccinMacchiato => ([198, 160, 246], [138, 173, 244]),
+            GuiTheme::CatppuccinFrappe => ([202, 158, 230], [140, 170, 238]),
+            GuiTheme::CatppuccinLatte => ([136, 57, 239], [30, 102, 245]),
+            GuiTheme::Nord => ([136, 192, 208], [129, 161, 193]),
+            GuiTheme::TokyoNight => ([122, 162, 247], [187, 154, 247]),
+            GuiTheme::GruvboxDark => ([250, 189, 47], [215, 153, 33]),
+            GuiTheme::SolarizedLight => ([38, 139, 210], [42, 161, 152]),
+        }
+    }
+}
+
 fn default_gui_scale() -> f32 {
     1.0
 }
@@ -99,6 +167,8 @@ pub struct OverlayStyle {
     pub zone_bg_opacity: f32,
     #[serde(default = "default_gui_scale")]
     pub gui_scale: f32,
+    #[serde(default)]
+    pub gui_theme: GuiTheme,
 }
 
 impl Default for OverlayStyle {
@@ -109,6 +179,7 @@ impl Default for OverlayStyle {
             border_color: [56, 189, 248],
             zone_bg_opacity: 0.14,
             gui_scale: 1.0,
+            gui_theme: GuiTheme::default(),
         }
     }
 }
@@ -410,6 +481,7 @@ mod tests {
         std::fs::write(&path, r#"{"version":1}"#).unwrap();
         let partial = Config::load_or_create_at(&path, &monitors);
         assert!(partial.behavior.restore_on_unsnap);
+        assert_eq!(partial.appearance.gui_theme, GuiTheme::Dark);
         assert_eq!(partial.hotkeys.move_resize_modifier, "Alt");
         assert!(partial.monitors.contains_key(r"\\.\DISPLAY1_2560x1440"));
 
@@ -446,6 +518,7 @@ mod tests {
         cfg.appearance.border_color = [10, 200, 120];
         cfg.appearance.zone_bg_opacity = 0.25;
         cfg.appearance.gui_scale = 1.25;
+        cfg.appearance.gui_theme = GuiTheme::CatppuccinMocha;
         cfg.behavior.restore_on_unsnap = false;
         cfg.behavior.drag_top_maximize = false;
         cfg.behavior.excluded_apps = vec!["notepad.exe".to_string()];

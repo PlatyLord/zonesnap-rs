@@ -176,6 +176,7 @@ When a window is snapped by ZoneSnap, its pre-snap position and size are cached 
 | `appearance` | `border_color`          | `[56, 189, 248]`                 | RGB border color of active zone outline                                                      |
 | `appearance` | `zone_bg_opacity`       | `0.14`                           | Opacity of inactive custom zone cards (`0.0`–`0.50`)                                         |
 | `appearance` | `gui_scale`             | `1.0`                            | Settings GUI text/UI scale multiplier (`0.85`–`1.75`, on top of Windows DPI scaling)         |
+| `appearance` | `gui_theme`             | `"dark"`                         | Settings GUI theme (`dark`, `light`, `catppuccin_mocha`/`macchiato`/`frappe`/`latte`, `nord`, `tokyo_night`, `gruvbox_dark`, `solarized_light`) |
 | `behavior`   | `restore_on_unsnap`     | `true`                           | Restore original window size when dragged away                                               |
 | `behavior`   | `drag_top_maximize`     | `true`                           | Maximize window when `Alt + Left-Drag` reaches the top edge of a monitor                     |
 | `behavior`   | `excluded_apps`         | `["mstsc.exe", "vmconnect.exe"]` | Lowercase executable names where mouse hooks pass through untouched                          |
