@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      sync_existing_releases:
+        description: 'Sync CHANGELOG.md notes to all existing GitHub Releases (and remove SHA256SUMS.txt)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -12,11 +17,14 @@ permissions:
 jobs:
   release:
     name: Build & Publish Windows Release
+    if: github.event_name != 'workflow_dispatch' || !inputs.sync_existing_releases
     runs-on: windows-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -30,17 +38,150 @@ jobs:
       - name: Build optimized release binary
         run: cargo build --release
 
-      - name: Generate SHA-256 checksum
+      - name: Extract release notes
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         run: |
-          $hash = (Get-FileHash -Algorithm SHA256 target\release\zonesnap.exe).Hash.ToLower()
-          "$hash  zonesnap.exe" | Out-File -FilePath SHA256SUMS.txt -Encoding ascii -NoNewline
+          $tag = "${{ github.ref_name }}"
+          $tags = @(git tag --sort=creatordate | Where-Object { $_ -ne "" })
+          $idx = [Array]::IndexOf($tags, $tag)
+          $prev = if ($idx -gt 0) { $tags[$idx - 1] } else { $null }
+
+          $body = $null
+          if (Test-Path CHANGELOG.md) {
+            $lines = Get-Content CHANGELOG.md -Encoding UTF8
+            $escaped = [regex]::Escape($tag)
+            $inSection = $false
+            $captured = [System.Collections.Generic.List[string]]::new()
+            foreach ($line in $lines) {
+              if (-not $inSection) {
+                if ($line -match "^##\s+\[?$escaped\]?(?:\s|$)") {
+                  $inSection = $true
+                }
+              } else {
+                if ($line -match '^##\s+') {
+                  break
+                }
+                $captured.Add($line)
+              }
+            }
+            $text = (($captured -join "`n").Trim()) -replace '(\r?\n---\s*)+$', ''
+            if ($text.Trim()) {
+              $body = $text.Trim()
+            }
+          }
+
+          if (-not $body) {
+            $commits = if ($prev) {
+              git log "$prev..$tag" --no-merges --pretty=format:"- %s"
+            } else {
+              git log "$tag" --no-merges --pretty=format:"- %s"
+            }
+            $body = "## What's Changed`n`n" + ($commits -join "`n")
+          }
+
+          if ($prev) {
+            $body += "`n`n**Full Changelog**: https://github.com/${{ github.repository }}/compare/$prev...$tag"
+          }
+
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText((Join-Path $PWD "release_notes.md"), "$body`n", $utf8NoBom)
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
-          files: |
-            target/release/zonesnap.exe
-            SHA256SUMS.txt
+          body_path: release_notes.md
+          files: target/release/zonesnap.exe
+
+  sync-changelogs:
+    name: Sync Existing Releases from CHANGELOG.md
+    if: github.event_name == 'workflow_dispatch' && inputs.sync_existing_releases
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync existing releases from CHANGELOG.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import tempfile
+
+          with open("CHANGELOG.md", "r", encoding="utf-8") as f:
+              lines = f.read().splitlines()
+
+          sections = {}
+          current_tag = None
+          buf = []
+          for line in lines:
+              m = re.match(r"^##\s+\[?([^\]\s]+)\]?(?:\s|$)", line)
+              if m:
+                  if current_tag is not None:
+                      text = re.sub(r"(?:\r?\n---\s*)+$", "", "\n".join(buf).strip()).strip()
+                      if text:
+                          sections[current_tag] = text
+                  current_tag = m.group(1)
+                  buf = []
+              elif current_tag is not None:
+                  buf.append(line)
+          if current_tag is not None:
+              text = re.sub(r"(?:\r?\n---\s*)+$", "", "\n".join(buf).strip()).strip()
+              if text:
+                  sections[current_tag] = text
+
+          ordered_tags = [
+              t.strip()
+              for t in subprocess.check_output(["git", "tag", "--sort=creatordate"], text=True).splitlines()
+              if t.strip()
+          ]
+          prev_map = {
+              tag: (ordered_tags[i - 1] if i > 0 else None)
+              for i, tag in enumerate(ordered_tags)
+          }
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          releases_raw = subprocess.check_output(
+              ["gh", "release", "list", "--limit", "100", "--json", "tagName"],
+              text=True,
+          )
+          releases = [r["tagName"] for r in json.loads(releases_raw)]
+
+          for tag in releases:
+              if tag not in sections:
+                  print(f"Skipping {tag}: no section in CHANGELOG.md")
+                  continue
+
+              body = sections[tag]
+              prev = prev_map.get(tag)
+              if prev:
+                  body += f"\n\n**Full Changelog**: https://github.com/{repo}/compare/{prev}...{tag}"
+
+              with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", delete=False) as tf:
+                  tf.write(body + "\n")
+                  tmp_path = tf.name
+
+              try:
+                  subprocess.check_call(["gh", "release", "edit", tag, "--notes-file", tmp_path])
+                  print(f"Updated release notes for {tag}")
+              finally:
+                  os.remove(tmp_path)
+
+              view_raw = subprocess.check_output(
+                  ["gh", "release", "view", tag, "--json", "assets"],
+                  text=True,
+              )
+              assets = [a["name"] for a in json.loads(view_raw).get("assets", [])]
+              if "SHA256SUMS.txt" in assets:
+                  subprocess.check_call(["gh", "release", "delete-asset", tag, "SHA256SUMS.txt", "--yes"])
+                  print(f"Deleted SHA256SUMS.txt from {tag}")
+          PY

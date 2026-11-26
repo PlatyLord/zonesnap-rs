@@ -24,7 +24,8 @@
     <a href="#quick-start">Quick Start</a> &middot;
     <a href="#controls--shortcuts">Controls</a> &middot;
     <a href="#configuration-zonesjson">Configuration</a> &middot;
-    <a href="#building-from-source">Building</a>
+    <a href="#building-from-source">Building</a> &middot;
+    <a href="CHANGELOG.md">Changelog</a>
   </p>
 
   <br />
@@ -99,7 +100,7 @@
 
 ## Quick Start
 
-1. **Download:** Grab `zonesnap.exe` (and optionally `SHA256SUMS.txt`) from [Releases](https://github.com/PlatyLord/zonesnap-rs/releases).
+1. **Download:** Grab `zonesnap.exe` from [Releases](https://github.com/PlatyLord/zonesnap-rs/releases) (see [CHANGELOG.md](CHANGELOG.md) for release notes).
 2. **Run Anywhere:** Put `zonesnap.exe` in any folder (or USB drive) and double-click it—it runs silently in the system tray and creates `zones.json` beside the binary on first launch.
 3. **Start Snapping:**
    - Drag any window title bar and tap **Right-Click** (while holding Left-Click) to open the zone overlay, move to a target, and release **Left-Click** to snap.
@@ -232,7 +233,7 @@ Supported hotkey `key` values: `A`–`Z`, `0`–`9`, `F1`–`F12`, `Space`, `Tab
 
 - **An elevated (Run as Administrator) window won't snap or move:** Windows UIPI blocks non-elevated hooks from moving elevated windows. Run `zonesnap.exe` as Administrator if you need to manage elevated windows.
 - **Remote Desktop or a fullscreen game intercepts clicks:** Add its process filename (e.g. `mstsc.exe`, `game.exe`) under **Appearance & Behavior → Excluded Applications** (`excluded_apps`).
-- **Windows SmartScreen warns on an unsigned `.exe`:** ZoneSnap is distributed without a paid code-signing certificate. Verify the binary against `SHA256SUMS.txt` from the GitHub Release:
+- **Windows SmartScreen warns on an unsigned `.exe`:** ZoneSnap is distributed without a paid code-signing certificate. You can verify your downloaded binary against the `sha256` digest shown next to `zonesnap.exe` on the GitHub Release page:
   ```powershell
   Get-FileHash -Algorithm SHA256 .\zonesnap.exe
   ```
@@ -249,7 +250,7 @@ cargo test
 cargo build --release
 ```
 
-The standalone GUI executable is written to `target\release\zonesnap.exe` (statically linking the MSVC CRT via `.cargo/config.toml`). Pushing a version tag (e.g. `v1.1.0`) triggers [`.github/workflows/release.yml`](.github/workflows/release.yml) to run `cargo test`, build `zonesnap.exe`, generate `SHA256SUMS.txt`, and publish a GitHub Release automatically.
+The standalone GUI executable is written to `target\release\zonesnap.exe` (statically linking the MSVC CRT via `.cargo/config.toml`). Pushing a version tag (e.g. `v1.1.0`) triggers [`.github/workflows/release.yml`](.github/workflows/release.yml) to run `cargo test`, build `zonesnap.exe`, extract release notes from [CHANGELOG.md](CHANGELOG.md), and publish a GitHub Release automatically.
 
 ---
 
