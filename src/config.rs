@@ -221,6 +221,80 @@ impl Default for BehaviorConfig {
     }
 }
 
+fn default_edge_handle_color() -> [u8; 3] {
+    [56, 189, 248]
+}
+
+fn default_grab_padding() -> u32 {
+    10
+}
+
+fn default_handle_size() -> u32 {
+    20
+}
+
+/// Parse `"#RRGGBB"` or `"RRGGBB"` hex strings into `[r, g, b]`.
+pub fn parse_hex_rgb(s: &str) -> Option<[u8; 3]> {
+    let hex = s.trim().strip_prefix('#').unwrap_or_else(|| s.trim());
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some([r, g, b])
+}
+
+/// Format `[r, g, b]` as uppercase `"#RRGGBB"`.
+pub fn format_hex_rgb(rgb: [u8; 3]) -> String {
+    format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])
+}
+
+fn deserialize_rgb_or_hex<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 3], D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ColorRepr {
+        Rgb([u8; 3]),
+        Hex(String),
+    }
+    match ColorRepr::deserialize(deserializer)? {
+        ColorRepr::Rgb(rgb) => Ok(rgb),
+        ColorRepr::Hex(s) => parse_hex_rgb(&s)
+            .ok_or_else(|| serde::de::Error::custom(format!("invalid hex color '{s}'"))),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct EdgeResizeConfig {
+    pub enabled: bool,
+    #[serde(default = "default_grab_padding")]
+    pub grab_padding_px: u32,
+    pub corners_only: bool,
+    #[serde(default = "default_true")]
+    pub show_handles: bool,
+    #[serde(default = "default_handle_size")]
+    pub handle_size_px: u32,
+    #[serde(
+        default = "default_edge_handle_color",
+        deserialize_with = "deserialize_rgb_or_hex"
+    )]
+    pub handle_color: [u8; 3],
+}
+
+impl Default for EdgeResizeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            grab_padding_px: default_grab_padding(),
+            corners_only: false,
+            show_handles: true,
+            handle_size_px: default_handle_size(),
+            handle_color: default_edge_handle_color(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct HotkeysConfig {
@@ -283,6 +357,8 @@ pub struct Config {
     pub appearance: OverlayStyle,
     pub behavior: BehaviorConfig,
     pub hotkeys: HotkeysConfig,
+    #[serde(default)]
+    pub edge_resize: EdgeResizeConfig,
     pub monitors: BTreeMap<String, MonitorProfile>,
 }
 
@@ -293,6 +369,7 @@ impl Default for Config {
             appearance: OverlayStyle::default(),
             behavior: BehaviorConfig::default(),
             hotkeys: HotkeysConfig::default(),
+            edge_resize: EdgeResizeConfig::default(),
             monitors: BTreeMap::new(),
         }
     }
@@ -498,6 +575,11 @@ mod tests {
         assert_eq!(partial.appearance.gui_theme, GuiTheme::Dark);
         assert_eq!(partial.appearance.trigger_color, [245, 158, 11]);
         assert!((partial.appearance.trigger_opacity - 0.25).abs() < 0.001);
+        assert!(!partial.edge_resize.enabled);
+        assert_eq!(partial.edge_resize.grab_padding_px, 10);
+        assert!(partial.edge_resize.show_handles);
+        assert_eq!(partial.edge_resize.handle_size_px, 20);
+        assert_eq!(partial.edge_resize.handle_color, [56, 189, 248]);
         assert_eq!(partial.hotkeys.move_resize_modifier, "Alt");
         assert!(partial.monitors.contains_key(r"\\.\DISPLAY1_2560x1440"));
 
@@ -547,6 +629,12 @@ mod tests {
         cfg.hotkeys.move_resize_modifier = "Mouse Back".to_string();
         cfg.hotkeys.monitor_lock_modifier = "Shift".to_string();
         cfg.hotkeys.corner_resize_modifier = "Win".to_string();
+        cfg.edge_resize.enabled = true;
+        cfg.edge_resize.grab_padding_px = 14;
+        cfg.edge_resize.corners_only = true;
+        cfg.edge_resize.show_handles = false;
+        cfg.edge_resize.handle_size_px = 26;
+        cfg.edge_resize.handle_color = [250, 189, 47];
 
         cfg.save_at(&path).expect("save edited config");
         let reloaded = Config::load_or_create_at(&path, &monitors);
@@ -569,5 +657,20 @@ mod tests {
             parsed[1],
             CustomZone::with_trigger([0.15, 0.0, 0.85, 1.0], [0.42, 0.25, 0.58, 0.75])
         );
+    }
+
+    #[test]
+    fn edge_resize_hex_color_parses_and_deserializes() {
+        assert_eq!(parse_hex_rgb("#38bdf8"), Some([56, 189, 248]));
+        assert_eq!(parse_hex_rgb("  FF8800 "), Some([255, 136, 0]));
+        assert_eq!(parse_hex_rgb("#12345"), None);
+        assert_eq!(parse_hex_rgb("zzzzzz"), None);
+        assert_eq!(format_hex_rgb([56, 189, 248]), "#38BDF8");
+
+        let json = r##"{"enabled":true,"grab_padding_px":12,"handle_color":"#A6E3A1"}"##;
+        let er: EdgeResizeConfig = serde_json::from_str(json).expect("deserialize hex handle_color");
+        assert!(er.enabled);
+        assert_eq!(er.grab_padding_px, 12);
+        assert_eq!(er.handle_color, [166, 227, 161]);
     }
 }

@@ -1,11 +1,16 @@
 use crate::monitor::{MonitorInfo, Rect};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
+use std::sync::OnceLock;
 use windows::core::PWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
+use windows::Win32::Security::{
+    GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+};
 use windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS,
@@ -153,7 +158,77 @@ pub fn is_manageable_window(hwnd: HWND, own_overlay_hwnd: isize) -> bool {
             | "TopLevelOverflowWindow"
             | "ZoneSnap_OverlayWindow"
             | "ZoneSnap_Daemon_MsgWindow"
+            | "ZoneSnap_ResizeHandleWindow"
     )
+}
+
+/// Returns true if the current ZoneSnap process is running elevated (Administrator).
+pub fn is_current_process_elevated() -> bool {
+    static ELEVATED: OnceLock<bool> = OnceLock::new();
+    *ELEVATED.get_or_init(|| unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
+        let _guard = HandleGuard(token);
+        let mut elev = TOKEN_ELEVATION::default();
+        let mut ret_len = 0u32;
+        if GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elev as *mut TOKEN_ELEVATION as *mut c_void),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut ret_len,
+        )
+        .is_err()
+        {
+            return false;
+        }
+        elev.TokenIsElevated != 0
+    })
+}
+
+/// Returns false if `hwnd` belongs to an elevated/protected process that a non-elevated ZoneSnap cannot resize under UIPI.
+pub fn can_resize_target_uipi(hwnd: HWND) -> bool {
+    if hwnd.0.is_null() {
+        return false;
+    }
+    if is_current_process_elevated() {
+        return true;
+    }
+    let mut pid: u32 = 0;
+    unsafe {
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    }
+    if pid == 0 {
+        return false;
+    }
+    let Ok(proc_handle) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) })
+    else {
+        return false;
+    };
+    let _proc_guard = HandleGuard(proc_handle);
+    let mut token = HANDLE::default();
+    if unsafe { OpenProcessToken(proc_handle, TOKEN_QUERY, &mut token) }.is_err() {
+        return false;
+    }
+    let _tok_guard = HandleGuard(token);
+    let mut elev = TOKEN_ELEVATION::default();
+    let mut ret_len = 0u32;
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elev as *mut TOKEN_ELEVATION as *mut c_void),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut ret_len,
+        )
+    }
+    .is_err()
+    {
+        return false;
+    }
+    elev.TokenIsElevated == 0
 }
 
 /// Returns true if `hwnd` still refers to an existing window handle.

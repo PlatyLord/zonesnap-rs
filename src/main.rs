@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod config;
+mod edge_resize;
 mod gui;
 mod hook;
 mod hotkeys;
@@ -11,6 +12,9 @@ mod tray;
 mod window_ops;
 
 use crate::config::{config_modified_time, config_path, Config, LayoutMode};
+use crate::edge_resize::{
+    EdgeResizeManager, WM_ZONESNAP_FG_CHANGED, WM_ZONESNAP_HANDLE_DOWN, WM_ZONESNAP_HANDLE_UP,
+};
 use crate::hook::{HookEvent, HookMode, HookSharedState, HookThread, WM_ZONESNAP_EVENT};
 use crate::hotkeys::{
     is_mouse_vk, modifier_to_vk, optional_modifier_to_vk, HotkeyManager, HOTKEY_ACTIVATE_OVERLAY,
@@ -147,6 +151,7 @@ enum DragSession {
         pending_rect: Option<Rect>,
         last_resize_at: Instant,
         flush_timer_armed: bool,
+        from_edge_handle: bool,
     },
 }
 
@@ -184,6 +189,7 @@ struct DaemonState {
     drag: DragSession,
     overlay_session: Option<OverlaySession>,
     cursor_locked: bool,
+    edge_resize: EdgeResizeManager,
 }
 
 impl DaemonState {
@@ -220,6 +226,7 @@ impl DaemonState {
             drag: DragSession::None,
             overlay_session: None,
             cursor_locked: false,
+            edge_resize: EdgeResizeManager::new(),
         }
     }
 
@@ -319,6 +326,98 @@ impl DaemonState {
             &cfg.hotkeys.open_settings,
         );
         self.config = cfg;
+        self.refresh_edge_resize_config();
+    }
+
+    fn refresh_edge_resize_config(&mut self) {
+        let excluded = self.config.excluded_set();
+        let overlay_hwnd = self.shared.overlay_hwnd.load(Ordering::Acquire);
+        self.edge_resize.apply_config(
+            &self.config.edge_resize,
+            self.daemon_hwnd,
+            &self.shared,
+            &mut self.monitors,
+            &excluded,
+            overlay_hwnd,
+        );
+    }
+
+    fn refresh_edge_resize_target(&mut self) {
+        let excluded = self.config.excluded_set();
+        let overlay_hwnd = self.shared.overlay_hwnd.load(Ordering::Acquire);
+        self.edge_resize.refresh_foreground(
+            &self.config.edge_resize,
+            &self.shared,
+            &mut self.monitors,
+            &excluded,
+            overlay_hwnd,
+        );
+    }
+
+    fn start_edge_handle_resize(&mut self) {
+        if self.shared.mode() != HookMode::Idle {
+            return;
+        }
+        let Some((hwnd_raw, _, edges)) = self.edge_resize.begin_drag_capture(&self.shared) else {
+            return;
+        };
+        let hwnd = isize_to_hwnd(hwnd_raw);
+        if !is_valid_window(hwnd) || !is_resizable_window(hwnd) {
+            self.edge_resize.end_drag_capture(&self.shared);
+            return;
+        }
+        let Some(orig_rect) = get_window_rect(hwnd) else {
+            self.edge_resize.end_drag_capture(&self.shared);
+            return;
+        };
+        let mut pt = POINT::default();
+        unsafe {
+            let _ = GetCursorPos(&mut pt);
+        }
+        self.snapped_cache.remove(&hwnd_raw);
+        let (min_w, min_h) = query_min_track_size(hwnd);
+        self.drag = DragSession::AltResize {
+            hwnd: hwnd_raw,
+            start_x: pt.x,
+            start_y: pt.y,
+            orig_rect,
+            edges,
+            min_w,
+            min_h,
+            last_applied_rect: orig_rect,
+            pending_rect: None,
+            last_resize_at: Instant::now() - RESIZE_MIN_INTERVAL,
+            flush_timer_armed: false,
+            from_edge_handle: true,
+        };
+        self.shared.set_mode(HookMode::EdgeResizing);
+    }
+
+    fn finish_edge_handle_resize(&mut self) {
+        if let DragSession::AltResize {
+            hwnd,
+            pending_rect: Some(final_rect),
+            last_applied_rect,
+            from_edge_handle: true,
+            ..
+        } = self.drag
+        {
+            unsafe {
+                let _ = KillTimer(self.daemon_hwnd, TIMER_RESIZE_FLUSH);
+            }
+            if final_rect != last_applied_rect {
+                resize_window(isize_to_hwnd(hwnd), final_rect);
+            }
+        }
+        if matches!(
+            self.drag,
+            DragSession::AltResize {
+                from_edge_handle: true,
+                ..
+            }
+        ) {
+            self.end_drag();
+        }
     }
 
     fn handle_display_change(&mut self) {
@@ -328,6 +427,9 @@ impl DaemonState {
         if self.overlay_session.is_none() && !self.overlay.is_visible() {
             cancel_overlay_idle_evict(self.daemon_hwnd);
             self.overlay.release_idle_buffers();
+        }
+        if self.shared.mode() == HookMode::Idle {
+            self.refresh_edge_resize_target();
         }
     }
 
@@ -358,6 +460,10 @@ impl DaemonState {
         self.overlay_session = None;
         self.drag = DragSession::None;
         self.shared.set_mode(HookMode::Idle);
+        self.edge_resize.end_drag_capture(&self.shared);
+        if self.config.edge_resize.enabled {
+            self.refresh_edge_resize_target();
+        }
     }
 
     fn flush_pending_resize(&mut self) {
@@ -401,6 +507,7 @@ impl DaemonState {
     }
 
     fn show_overlay(&mut self, target_hwnd: isize, x: i32, y: i32, from_hotkey: bool) {
+        self.edge_resize.hide_handle(&self.shared);
         let Some(mon) = find_monitor_at(&mut self.monitors, x, y) else {
             return;
         };
@@ -779,6 +886,7 @@ impl DaemonState {
                 };
             }
             HookEvent::StartAltMove { x, y } => {
+                self.edge_resize.hide_handle(&self.shared);
                 let Some(hwnd) = get_root_window_at(x, y) else {
                     self.end_drag();
                     return;
@@ -824,6 +932,7 @@ impl DaemonState {
                 self.update_cursor_lock(lock_down, x, y);
             }
             HookEvent::StartAltResize { x, y, corner_mode } => {
+                self.edge_resize.hide_handle(&self.shared);
                 let Some(hwnd) = get_root_window_at(x, y) else {
                     self.end_drag();
                     return;
@@ -860,6 +969,7 @@ impl DaemonState {
                     pending_rect: None,
                     last_resize_at: Instant::now() - RESIZE_MIN_INTERVAL,
                     flush_timer_armed: false,
+                    from_edge_handle: false,
                 };
             }
             HookEvent::TriggerOverlayFromDrag { x, y } => {
@@ -916,6 +1026,16 @@ impl DaemonState {
                 }
             }
             HookEvent::LeftUp { x, y } => {
+                if matches!(
+                    self.drag,
+                    DragSession::AltResize {
+                        from_edge_handle: true,
+                        ..
+                    }
+                ) {
+                    self.finish_edge_handle_resize();
+                    return;
+                }
                 if let Some(sess) = &self.overlay_session {
                     if !sess.from_hotkey {
                         self.commit_overlay_snap();
@@ -1019,6 +1139,7 @@ impl DaemonState {
                         .map(|r| r.left != start_rect.left || r.top != start_rect.top)
                         .unwrap_or(false);
                     if titlebar_hit || moved {
+                        self.edge_resize.hide_handle(&self.shared);
                         self.drag = DragSession::Standard {
                             hwnd,
                             start_x,
@@ -1084,6 +1205,7 @@ impl DaemonState {
                 ref mut pending_rect,
                 ref mut last_resize_at,
                 ref mut flush_timer_armed,
+                ..
             } => {
                 let new_rect =
                     compute_resized_rect(orig_rect, edges, x - start_x, y - start_y, min_w, min_h);
@@ -1115,7 +1237,18 @@ impl DaemonState {
                     }
                 }
             }
-            _ => {}
+            DragSession::None => {
+                if self.shared.mode() == HookMode::Idle {
+                    self.edge_resize.on_hover_move(
+                        x,
+                        y,
+                        &self.config.edge_resize,
+                        self.daemon_hwnd,
+                        &self.shared,
+                    );
+                }
+            }
+            DragSession::Standard { .. } => {}
         }
     }
 }
@@ -1167,6 +1300,38 @@ unsafe extern "system" fn daemon_wnd_proc(
                 if let Ok(mut guard) = cell.try_borrow_mut() {
                     if let Some(state) = guard.as_mut() {
                         state.process_events();
+                    }
+                }
+            });
+            LRESULT(0)
+        }
+        WM_ZONESNAP_FG_CHANGED => {
+            DAEMON_STATE.with(|cell| {
+                if let Ok(mut guard) = cell.try_borrow_mut() {
+                    if let Some(state) = guard.as_mut() {
+                        if state.shared.mode() == HookMode::Idle {
+                            state.refresh_edge_resize_target();
+                        }
+                    }
+                }
+            });
+            LRESULT(0)
+        }
+        WM_ZONESNAP_HANDLE_DOWN => {
+            DAEMON_STATE.with(|cell| {
+                if let Ok(mut guard) = cell.try_borrow_mut() {
+                    if let Some(state) = guard.as_mut() {
+                        state.start_edge_handle_resize();
+                    }
+                }
+            });
+            LRESULT(0)
+        }
+        WM_ZONESNAP_HANDLE_UP => {
+            DAEMON_STATE.with(|cell| {
+                if let Ok(mut guard) = cell.try_borrow_mut() {
+                    if let Some(state) = guard.as_mut() {
+                        state.finish_edge_handle_resize();
                     }
                 }
             });
@@ -1384,7 +1549,7 @@ fn main() {
     let taskbar_created_msg = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
 
     DAEMON_STATE.with(|cell| {
-        *cell.borrow_mut() = Some(DaemonState::new(
+        let mut st = DaemonState::new(
             daemon_hwnd,
             shared,
             rx,
@@ -1396,7 +1561,9 @@ fn main() {
             tray,
             taskbar_created_msg,
             hotkeys,
-        ));
+        );
+        st.refresh_edge_resize_config();
+        *cell.borrow_mut() = Some(st);
     });
 
     unsafe {
