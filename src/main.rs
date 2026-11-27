@@ -1493,8 +1493,29 @@ fn main() {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some(startup::ARG_ADMIN_ENABLE) {
+        let code = match (args.get(2), args.get(3)) {
+            (Some(exe), Some(user_id)) => {
+                match startup::install_admin_task_direct(std::path::Path::new(exe), user_id) {
+                    Ok(()) => 0,
+                    Err(_) => 1,
+                }
+            }
+            _ => 1,
+        };
+        std::process::exit(code);
+    }
+    if args.get(1).map(String::as_str) == Some(startup::ARG_ADMIN_DISABLE) {
+        let code = match startup::remove_admin_task_direct() {
+            Ok(()) => 0,
+            Err(_) => 1,
+        };
+        std::process::exit(code);
+    }
+
     let reload_msg = reload_window_message();
-    if std::env::args().any(|a| a == "--settings") {
+    if args.iter().any(|a| a == "--settings") {
         gui::run_settings_window(reload_msg);
         return;
     }
