@@ -215,6 +215,71 @@ fn pick_non_overlapping_center(
     best_pos
 }
 
+fn zone_distinct_color(index: usize, dark_mode: bool) -> Color32 {
+    const DARK_COLORS: [Color32; 8] = [
+        Color32::from_rgb(56, 189, 248),  // Sky
+        Color32::from_rgb(167, 139, 250), // Violet
+        Color32::from_rgb(52, 211, 153),  // Emerald
+        Color32::from_rgb(251, 146, 60),  // Orange
+        Color32::from_rgb(244, 114, 182), // Pink
+        Color32::from_rgb(45, 212, 191),  // Teal
+        Color32::from_rgb(250, 204, 21),  // Yellow
+        Color32::from_rgb(129, 140, 248), // Indigo
+    ];
+    const LIGHT_COLORS: [Color32; 8] = [
+        Color32::from_rgb(2, 132, 199),   // Sky
+        Color32::from_rgb(124, 58, 237),  // Violet
+        Color32::from_rgb(5, 150, 105),   // Emerald
+        Color32::from_rgb(234, 88, 12),   // Orange
+        Color32::from_rgb(219, 39, 119),  // Pink
+        Color32::from_rgb(13, 148, 136),  // Teal
+        Color32::from_rgb(202, 138, 4),   // Amber
+        Color32::from_rgb(79, 70, 229),   // Indigo
+    ];
+    if dark_mode {
+        DARK_COLORS[index % DARK_COLORS.len()]
+    } else {
+        LIGHT_COLORS[index % LIGHT_COLORS.len()]
+    }
+}
+
+fn place_corner_tag(
+    is_top_left: bool,
+    tag_size: Vec2,
+    target_rect: EguiRect,
+    canvas_rect: EguiRect,
+) -> EguiRect {
+    let bounds = canvas_rect.shrink(4.0);
+    let inside = target_rect.width() >= tag_size.x + 28.0
+        && target_rect.height() >= tag_size.y * 2.0 + 36.0;
+
+    let raw_min = if inside {
+        if is_top_left {
+            Pos2::new(target_rect.left() + 10.0, target_rect.top() + 10.0)
+        } else {
+            Pos2::new(
+                target_rect.right() - tag_size.x - 10.0,
+                target_rect.bottom() - tag_size.y - 10.0,
+            )
+        }
+    } else if is_top_left {
+        Pos2::new(target_rect.left() + 8.0, target_rect.top() - tag_size.y - 8.0)
+    } else {
+        Pos2::new(
+            target_rect.right() - tag_size.x - 8.0,
+            target_rect.bottom() + 8.0,
+        )
+    };
+
+    let min_x = bounds.left();
+    let max_x = (bounds.right() - tag_size.x).max(min_x);
+    let min_y = bounds.top();
+    let max_y = (bounds.bottom() - tag_size.y).max(min_y);
+
+    let clamped_min = Pos2::new(raw_min.x.clamp(min_x, max_x), raw_min.y.clamp(min_y, max_y));
+    EguiRect::from_min_size(clamped_min, tag_size)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ThemePalette {
     dark_mode: bool,
@@ -1463,36 +1528,29 @@ impl SettingsApp {
         let bd_col = Color32::from_rgb(bd[0], bd[1], bd[2]);
         let tr_col = Color32::from_rgb(tr_rgb[0], tr_rgb[1], tr_rgb[2]);
 
-        let unsel_fill = if palette.dark_mode {
-            Color32::from_rgba_unmultiplied(
-                palette.widget_bg.r(),
-                palette.widget_bg.g(),
-                palette.widget_bg.b(),
-                120,
-            )
-        } else {
-            Color32::from_rgba_unmultiplied(
-                palette.surface_bg.r(),
-                palette.surface_bg.g(),
-                palette.surface_bg.b(),
-                150,
-            )
-        };
         let sel_fill = Color32::from_rgba_unmultiplied(
             hi[0],
             hi[1],
             hi[2],
-            if palette.dark_mode { 64 } else { 52 },
+            if palette.dark_mode { 74 } else { 60 },
         );
 
-        // Pass 1: Unselected zone bounds
+        // Pass 1: Unselected zone bounds (distinct per-zone colors so overlapping shapes stand out)
         for (i, z) in zones.iter().enumerate() {
             if self.selected_zone_idx == Some(i) {
                 continue;
             }
             let sr = to_screen(z.bounds).shrink(2.0);
-            p.rect_filled(sr, 2.0, unsel_fill);
-            p.rect_stroke(sr, 2.0, Stroke::new(1.5_f32, palette.border));
+            let zcol = zone_distinct_color(i, palette.dark_mode);
+            let fill = Color32::from_rgba_unmultiplied(
+                zcol.r(),
+                zcol.g(),
+                zcol.b(),
+                if palette.dark_mode { 26 } else { 30 },
+            );
+            let stroke_col = Color32::from_rgba_unmultiplied(zcol.r(), zcol.g(), zcol.b(), 155);
+            p.rect_filled(sr, 2.0, fill);
+            p.rect_stroke(sr, 2.0, Stroke::new(1.5_f32, stroke_col));
         }
 
         // Pass 2: Selected zone bounds on top
@@ -1500,9 +1558,9 @@ impl SettingsApp {
             if let Some(z) = zones.get(sel) {
                 let sr = to_screen(z.bounds).shrink(2.0);
                 let bw = if self.zone_edit_target == ZoneEditTarget::Bounds {
-                    2.5_f32
+                    2.75_f32
                 } else {
-                    1.75_f32
+                    2.0_f32
                 };
                 p.rect_filled(sr, 2.0, sel_fill);
                 p.rect_stroke(sr, 2.0, Stroke::new(bw, bd_col));
@@ -1515,46 +1573,66 @@ impl SettingsApp {
             .filter_map(|z| z.trigger.map(|tr| to_screen(tr).shrink(1.0)))
             .collect();
 
-        // Pass 3: High-contrast zone bounds label pills with anti-collision placement
+        // Pass 3: Zone bounds dimension pills (unselected first, selected highlighted on top)
         let mut placed_pills: Vec<EguiRect> = Vec::with_capacity(zones.len());
-        for (i, z) in zones.iter().enumerate() {
-            let sr = to_screen(z.bounds).shrink(2.0);
-            let is_sel = self.selected_zone_idx == Some(i);
-            let pw = ((z.bounds[2] - z.bounds[0]) * mon_w as f32).round() as i32;
-            let ph = ((z.bounds[3] - z.bounds[1]) * mon_h as f32).round() as i32;
-            let label = format!("{}\n{}x{}", i + 1, pw, ph);
-            let text_col = if is_sel {
-                palette.canvas_label_active
-            } else {
-                palette.canvas_label
-            };
-            let galley = p.layout_no_wrap(label, egui::FontId::proportional(12.5), text_col);
-            let pill_size = galley.size() + Vec2::new(12.0, 6.0);
-            let center = pick_non_overlapping_center(sr, pill_size, &placed_pills, &trigger_rects);
-            let pill_rect = EguiRect::from_center_size(center, pill_size);
-            placed_pills.push(pill_rect);
+        for pass_selected in [false, true] {
+            for (i, z) in zones.iter().enumerate() {
+                let is_sel = self.selected_zone_idx == Some(i);
+                if is_sel != pass_selected {
+                    continue;
+                }
+                let sr = to_screen(z.bounds).shrink(2.0);
+                let pw = ((z.bounds[2] - z.bounds[0]) * mon_w as f32).round() as i32;
+                let ph = ((z.bounds[3] - z.bounds[1]) * mon_h as f32).round() as i32;
+                let label = format!("{}\n{}x{}", i + 1, pw, ph);
+                let pill_accent = if self.zone_edit_target == ZoneEditTarget::Trigger {
+                    tr_col
+                } else {
+                    bd_col
+                };
+                let text_col = if is_sel {
+                    contrasting_text_color(pill_accent)
+                } else {
+                    palette.canvas_label
+                };
+                let galley = p.layout_no_wrap(label, egui::FontId::proportional(12.5), text_col);
+                let pill_size = galley.size() + Vec2::new(12.0, 6.0);
+                let center = pick_non_overlapping_center(sr, pill_size, &placed_pills, &trigger_rects);
+                let pill_rect = EguiRect::from_center_size(center, pill_size);
+                placed_pills.push(pill_rect);
 
-            let pill_bg = Color32::from_rgba_unmultiplied(
-                palette.extreme_bg.r(),
-                palette.extreme_bg.g(),
-                palette.extreme_bg.b(),
-                if is_sel { 238 } else { 225 },
-            );
-            let pill_border = if is_sel {
-                Stroke::new(1.5_f32, bd_col)
-            } else {
-                Stroke::new(1.0_f32, palette.border)
-            };
-            p.rect_filled(pill_rect, 4.0, pill_bg);
-            p.rect_stroke(pill_rect, 4.0, pill_border);
-            p.galley(
-                Pos2::new(
-                    pill_rect.center().x - galley.size().x * 0.5,
-                    pill_rect.center().y - galley.size().y * 0.5,
-                ),
-                galley,
-                text_col,
-            );
+                let zcol = zone_distinct_color(i, palette.dark_mode);
+                let pill_bg = if is_sel {
+                    Color32::from_rgba_unmultiplied(
+                        pill_accent.r(),
+                        pill_accent.g(),
+                        pill_accent.b(),
+                        240,
+                    )
+                } else {
+                    Color32::from_rgba_unmultiplied(
+                        palette.extreme_bg.r(),
+                        palette.extreme_bg.g(),
+                        palette.extreme_bg.b(),
+                        225,
+                    )
+                };
+                let pill_border = if is_sel {
+                    Stroke::new(1.5_f32, palette.extreme_bg)
+                } else {
+                    Stroke::new(1.25_f32, zcol)
+                };
+                p.rect_filled(pill_rect, 4.0, pill_bg);
+                p.rect_stroke(pill_rect, 4.0, pill_border);
+                p.galley(
+                    Pos2::new(
+                        pill_rect.center().x - galley.size().x * 0.5,
+                        pill_rect.center().y - galley.size().y * 0.5,
+                    ),
+                    galley,
+                    text_col,
+                );
+            }
         }
 
         // Pass 4: Trigger pads (unselected first, then selected on top)
@@ -1604,6 +1682,52 @@ impl SettingsApp {
                     galley,
                     badge_text_col,
                 );
+            }
+        }
+
+        // Pass 4.5: Corner (X1, Y1) & (X2, Y2) coordinate tags for the active edited shape
+        if let Some(sel) = self.selected_zone_idx {
+            if let Some(z) = zones.get(sel) {
+                let active_norm = if self.zone_edit_target == ZoneEditTarget::Trigger {
+                    z.trigger.unwrap_or(z.bounds)
+                } else {
+                    z.bounds
+                };
+                let target_sr = to_screen(active_norm);
+                let tag_col = if self.zone_edit_target == ZoneEditTarget::Trigger {
+                    tr_col
+                } else {
+                    bd_col
+                };
+                let tag_bg = Color32::from_rgba_unmultiplied(
+                    palette.extreme_bg.r(),
+                    palette.extreme_bg.g(),
+                    palette.extreme_bg.b(),
+                    238,
+                );
+
+                for (is_top_left, text) in [
+                    (true, format!("X1 {:.3}, Y1 {:.3}", active_norm[0], active_norm[1])),
+                    (false, format!("X2 {:.3}, Y2 {:.3}", active_norm[2], active_norm[3])),
+                ] {
+                    let galley = p.layout_no_wrap(
+                        text,
+                        egui::FontId::monospace(10.5),
+                        palette.canvas_label_active,
+                    );
+                    let tag_size = galley.size() + Vec2::new(8.0, 4.0);
+                    let tag_rect = place_corner_tag(is_top_left, tag_size, target_sr, canvas_rect);
+                    p.rect_filled(tag_rect, 3.0, tag_bg);
+                    p.rect_stroke(tag_rect, 3.0, Stroke::new(1.25_f32, tag_col));
+                    p.galley(
+                        Pos2::new(
+                            tag_rect.center().x - galley.size().x * 0.5,
+                            tag_rect.center().y - galley.size().y * 0.5,
+                        ),
+                        galley,
+                        palette.canvas_label_active,
+                    );
+                }
             }
         }
 
@@ -2847,5 +2971,32 @@ mod tests {
         let [w, h] = compute_default_settings_size(&[laptop], 1.2);
         assert!(w <= 1280.0 * 0.90 + 1.0 && w >= 760.0);
         assert!(h <= 688.0 * 0.88 + 1.0 && h >= 560.0);
+    }
+
+    #[test]
+    fn distinct_zone_colors_and_corner_tag_clamping() {
+        let dark_set: std::collections::HashSet<Color32> =
+            (0..6).map(|i| zone_distinct_color(i, true)).collect();
+        let light_set: std::collections::HashSet<Color32> =
+            (0..6).map(|i| zone_distinct_color(i, false)).collect();
+        assert_eq!(dark_set.len(), 6);
+        assert_eq!(light_set.len(), 6);
+
+        let canvas = EguiRect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(800.0, 450.0));
+        let tag_size = Vec2::new(120.0, 18.0);
+
+        let large_zone = EguiRect::from_min_max(Pos2::new(100.0, 60.0), Pos2::new(500.0, 360.0));
+        let tl_in = place_corner_tag(true, tag_size, large_zone, canvas);
+        let br_in = place_corner_tag(false, tag_size, large_zone, canvas);
+        assert!(large_zone.contains_rect(tl_in));
+        assert!(large_zone.contains_rect(br_in));
+
+        let edge_pad = EguiRect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(80.0, 40.0));
+        let tl_edge = place_corner_tag(true, tag_size, edge_pad, canvas);
+        assert!(canvas.shrink(4.0).contains_rect(tl_edge));
+
+        let bottom_edge = EguiRect::from_min_max(Pos2::new(720.0, 410.0), Pos2::new(800.0, 450.0));
+        let br_edge = place_corner_tag(false, tag_size, bottom_edge, canvas);
+        assert!(canvas.shrink(4.0).contains_rect(br_edge));
     }
 }
