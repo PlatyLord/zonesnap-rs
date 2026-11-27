@@ -49,6 +49,72 @@ fn paint_color_swatch(ui: &mut egui::Ui, fill: Color32, border: Color32) {
     p.rect_stroke(rect, 2.5, Stroke::new(1.5_f32, border));
 }
 
+fn open_config_folder() -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let path = config_path().map_err(|e| format!("Could not resolve config path: {e}"))?;
+    let mut cmd = std::process::Command::new("explorer.exe");
+    if path.exists() {
+        cmd.raw_arg(format!("/select,\"{}\"", path.display()));
+    } else if let Some(parent) = path.parent() {
+        cmd.arg(parent);
+    }
+    cmd.spawn()
+        .map_err(|e| format!("Failed to open Explorer: {e}"))?;
+    Ok(())
+}
+
+fn folder_icon_button(ui: &mut egui::Ui, palette: ThemePalette) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(24.0, 20.0), Sense::click());
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    let bg = if resp.is_pointer_button_down_on() {
+        palette.widget_active
+    } else if resp.hovered() {
+        palette.widget_hovered
+    } else {
+        palette.widget_bg
+    };
+    let border_col = if resp.hovered() {
+        palette.accent
+    } else {
+        palette.border
+    };
+    let icon_col = if resp.hovered() {
+        palette.accent
+    } else {
+        palette.text
+    };
+
+    let p = ui.painter();
+    p.rect_filled(rect, 4.0, bg);
+    p.rect_stroke(rect, 4.0, Stroke::new(1.0_f32, border_col));
+
+    let c = rect.center();
+    let folder_pts = vec![
+        Pos2::new(c.x - 6.5, c.y - 4.5),
+        Pos2::new(c.x - 1.5, c.y - 4.5),
+        Pos2::new(c.x + 0.0, c.y - 2.5),
+        Pos2::new(c.x + 6.5, c.y - 2.5),
+        Pos2::new(c.x + 6.5, c.y + 4.5),
+        Pos2::new(c.x - 6.5, c.y + 4.5),
+    ];
+    p.add(egui::Shape::closed_line(
+        folder_pts,
+        Stroke::new(1.3_f32, icon_col),
+    ));
+    p.line_segment(
+        [
+            Pos2::new(c.x - 6.5, c.y - 2.5),
+            Pos2::new(c.x + 0.0, c.y - 2.5),
+        ],
+        Stroke::new(1.1_f32, icon_col),
+    );
+
+    resp.on_hover_text("Open containing folder")
+}
+
 fn rect_overlap_area(a: EguiRect, b: EguiRect) -> f32 {
     let inter = a.intersect(b);
     if inter.is_positive() {
@@ -2514,6 +2580,12 @@ impl eframe::App for SettingsApp {
                 }
             });
             ui.horizontal_wrapped(|ui| {
+                if folder_icon_button(ui, palette).clicked() {
+                    if let Err(err) = open_config_folder() {
+                        self.status_msg = Some(err);
+                        self.status_is_error = true;
+                    }
+                }
                 let path_str = config_path()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|_| "zones.json".to_string());
