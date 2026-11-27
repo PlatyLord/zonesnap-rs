@@ -1635,7 +1635,7 @@ impl SettingsApp {
             }
         }
 
-        // Pass 4: Trigger pads (unselected first, then selected on top)
+        // Pass 4: Trigger pads (unselected muted in background, selected highlighted on top)
         for pass_selected in [false, true] {
             for (i, z) in zones.iter().enumerate() {
                 let is_sel = self.selected_zone_idx == Some(i);
@@ -1646,25 +1646,51 @@ impl SettingsApp {
                     continue;
                 };
                 let tr_rect = to_screen(tr).shrink(1.0);
-                let tr_fill = Color32::from_rgba_unmultiplied(
-                    tr_col.r(),
-                    tr_col.g(),
-                    tr_col.b(),
-                    if is_sel { 88 } else { 54 },
-                );
-                let tr_stroke_w = if is_sel {
-                    if self.zone_edit_target == ZoneEditTarget::Trigger {
-                        2.75_f32
-                    } else {
-                        2.25_f32
-                    }
-                } else {
-                    1.75_f32
-                };
-                p.rect_filled(tr_rect, 2.0, tr_fill);
-                p.rect_stroke(tr_rect, 2.0, Stroke::new(tr_stroke_w, tr_col));
+                let is_active_trigger = is_sel && self.zone_edit_target == ZoneEditTarget::Trigger;
 
-                let badge_text_col = contrasting_text_color(tr_col);
+                let (fill_alpha, stroke_alpha, tr_stroke_w) = if is_active_trigger {
+                    (96, 255, 2.75_f32)
+                } else if is_sel {
+                    (58, 215, 2.0_f32)
+                } else {
+                    (if palette.dark_mode { 20 } else { 22 }, 95, 1.25_f32)
+                };
+
+                let tr_fill =
+                    Color32::from_rgba_unmultiplied(tr_col.r(), tr_col.g(), tr_col.b(), fill_alpha);
+                let tr_stroke =
+                    Color32::from_rgba_unmultiplied(tr_col.r(), tr_col.g(), tr_col.b(), stroke_alpha);
+                p.rect_filled(tr_rect, 2.0, tr_fill);
+                p.rect_stroke(tr_rect, 2.0, Stroke::new(tr_stroke_w, tr_stroke));
+
+                let (badge_text_col, pill_bg, pill_border) = if is_sel {
+                    let bg_alpha = if is_active_trigger { 245 } else { 215 };
+                    let border = if is_active_trigger {
+                        Stroke::new(1.25_f32, palette.extreme_bg)
+                    } else {
+                        Stroke::NONE
+                    };
+                    (
+                        contrasting_text_color(tr_col),
+                        Color32::from_rgba_unmultiplied(tr_col.r(), tr_col.g(), tr_col.b(), bg_alpha),
+                        border,
+                    )
+                } else {
+                    (
+                        palette.muted_text,
+                        Color32::from_rgba_unmultiplied(
+                            palette.extreme_bg.r(),
+                            palette.extreme_bg.g(),
+                            palette.extreme_bg.b(),
+                            205,
+                        ),
+                        Stroke::new(
+                            1.0_f32,
+                            Color32::from_rgba_unmultiplied(tr_col.r(), tr_col.g(), tr_col.b(), 125),
+                        ),
+                    )
+                };
+
                 let galley = p.layout_no_wrap(
                     format!("Trigger {}", i + 1),
                     egui::FontId::proportional(11.5),
@@ -1672,8 +1698,10 @@ impl SettingsApp {
                 );
                 let pill_size = galley.size() + Vec2::new(10.0, 5.0);
                 let pill_rect = EguiRect::from_center_size(tr_rect.center(), pill_size);
-                let pill_bg = Color32::from_rgba_unmultiplied(tr_col.r(), tr_col.g(), tr_col.b(), 235);
                 p.rect_filled(pill_rect, 4.0, pill_bg);
+                if pill_border != Stroke::NONE {
+                    p.rect_stroke(pill_rect, 4.0, pill_border);
+                }
                 p.galley(
                     Pos2::new(
                         pill_rect.center().x - galley.size().x * 0.5,
