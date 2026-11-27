@@ -34,6 +34,7 @@ pub enum HookMode {
     AltResizing = 4,
     OverlayFromDrag = 5,
     OverlayFromHotkey = 6,
+    EdgeResizing = 7,
 }
 
 impl HookMode {
@@ -45,6 +46,7 @@ impl HookMode {
             4 => Self::AltResizing,
             5 => Self::OverlayFromDrag,
             6 => Self::OverlayFromHotkey,
+            7 => Self::EdgeResizing,
             _ => Self::Idle,
         }
     }
@@ -86,6 +88,16 @@ pub struct HookSharedState {
     move_dirty: AtomicBool,
     last_ctrl_down: AtomicBool,
     last_shift_down: AtomicBool,
+    pub edge_resize_enabled: AtomicBool,
+    pub edge_target_valid: AtomicBool,
+    edge_outer_lt: AtomicI64,
+    edge_outer_rb: AtomicI64,
+    edge_inner_lt: AtomicI64,
+    edge_inner_rb: AtomicI64,
+    pub edge_hover_active: AtomicBool,
+    handle_rect_lt: AtomicI64,
+    handle_rect_rb: AtomicI64,
+    pub handle_visible: AtomicBool,
     pub excluded_apps: RwLock<HashSet<String>>,
 }
 
@@ -107,8 +119,60 @@ impl HookSharedState {
             move_dirty: AtomicBool::new(false),
             last_ctrl_down: AtomicBool::new(false),
             last_shift_down: AtomicBool::new(false),
+            edge_resize_enabled: AtomicBool::new(false),
+            edge_target_valid: AtomicBool::new(false),
+            edge_outer_lt: AtomicI64::new(0),
+            edge_outer_rb: AtomicI64::new(0),
+            edge_inner_lt: AtomicI64::new(0),
+            edge_inner_rb: AtomicI64::new(0),
+            edge_hover_active: AtomicBool::new(false),
+            handle_rect_lt: AtomicI64::new(0),
+            handle_rect_rb: AtomicI64::new(0),
+            handle_visible: AtomicBool::new(false),
             excluded_apps: RwLock::new(excluded),
         }
+    }
+
+    pub fn set_edge_target(&self, outer_lt: i64, outer_rb: i64, inner_lt: i64, inner_rb: i64) {
+        self.edge_outer_lt.store(outer_lt, Ordering::Release);
+        self.edge_outer_rb.store(outer_rb, Ordering::Release);
+        self.edge_inner_lt.store(inner_lt, Ordering::Release);
+        self.edge_inner_rb.store(inner_rb, Ordering::Release);
+        self.edge_target_valid.store(true, Ordering::Release);
+    }
+
+    pub fn clear_edge_target(&self) {
+        self.edge_target_valid.store(false, Ordering::Release);
+        self.edge_hover_active.store(false, Ordering::Release);
+        self.handle_visible.store(false, Ordering::Release);
+    }
+
+    pub fn set_handle_bounds(&self, visible: bool, lt: i64, rb: i64) {
+        self.handle_rect_lt.store(lt, Ordering::Release);
+        self.handle_rect_rb.store(rb, Ordering::Release);
+        self.handle_visible.store(visible, Ordering::Release);
+    }
+
+    #[inline]
+    fn point_in_handle(&self, x: i32, y: i32) -> bool {
+        if !self.handle_visible.load(Ordering::Acquire) {
+            return false;
+        }
+        let (l, t) = unpack_point(self.handle_rect_lt.load(Ordering::Acquire));
+        let (r, b) = unpack_point(self.handle_rect_rb.load(Ordering::Acquire));
+        x >= l && x < r && y >= t && y < b
+    }
+
+    #[inline]
+    fn point_in_edge_ring(&self, x: i32, y: i32) -> bool {
+        let (ol, ot) = unpack_point(self.edge_outer_lt.load(Ordering::Acquire));
+        let (or, ob) = unpack_point(self.edge_outer_rb.load(Ordering::Acquire));
+        if x < ol || x > or || y < ot || y > ob {
+            return false;
+        }
+        let (il, it) = unpack_point(self.edge_inner_lt.load(Ordering::Acquire));
+        let (ir, ib) = unpack_point(self.edge_inner_rb.load(Ordering::Acquire));
+        !(x > il && x < ir && y > it && y < ib)
     }
 
     pub fn mode(&self) -> HookMode {
@@ -141,7 +205,7 @@ impl HookSharedState {
 }
 
 #[inline]
-fn pack_point(x: i32, y: i32) -> i64 {
+pub fn pack_point(x: i32, y: i32) -> i64 {
     ((x as i64) << 32) | ((y as u32) as i64)
 }
 
@@ -258,6 +322,19 @@ unsafe extern "system" fn mouse_hook_proc(ncode: i32, wparam: WPARAM, lparam: LP
                 if !ctx.state.move_dirty.swap(true, Ordering::AcqRel) {
                     notify_daemon(&ctx.state);
                 }
+            } else if ctx.state.edge_resize_enabled.load(Ordering::Relaxed)
+                && ctx.state.edge_target_valid.load(Ordering::Acquire)
+            {
+                let in_ring = ctx.state.point_in_edge_ring(x, y);
+                let was_hover = ctx.state.edge_hover_active.load(Ordering::Acquire);
+                if in_ring || was_hover {
+                    ctx.state
+                        .latest_move_packed
+                        .store(pack_point(x, y), Ordering::Release);
+                    if !ctx.state.move_dirty.swap(true, Ordering::AcqRel) {
+                        notify_daemon(&ctx.state);
+                    }
+                }
             }
         }
         WM_LBUTTONDOWN => {
@@ -282,7 +359,7 @@ unsafe extern "system" fn mouse_hook_proc(ncode: i32, wparam: WPARAM, lparam: LP
                         send_event(ctx, HookEvent::StartAltMove { x, y });
                         return LRESULT(1);
                     }
-                } else {
+                } else if !ctx.state.point_in_handle(x, y) {
                     ctx.state.set_mode(HookMode::MaybeStandardDrag);
                     send_event(ctx, HookEvent::LeftDownCandidate { x, y });
                 }

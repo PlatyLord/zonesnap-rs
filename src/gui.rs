@@ -1,4 +1,6 @@
-use crate::config::{config_path, Config, CustomZone, GuiTheme, Layout, LayoutMode};
+use crate::config::{
+    config_path, format_hex_rgb, parse_hex_rgb, Config, CustomZone, GuiTheme, Layout, LayoutMode,
+};
 use crate::hotkeys::{is_mouse_vk, modifier_to_vk, HotkeySpec};
 use crate::monitor::{enumerate_monitors, MonitorInfo};
 use eframe::egui::{self, Color32, Pos2, Rect as EguiRect, Sense, Stroke, Vec2};
@@ -462,6 +464,7 @@ struct SettingsApp {
     new_excluded_app: String,
     applied_gui_scale: f32,
     applied_theme: Option<GuiTheme>,
+    edge_handle_hex: String,
     about_icon_tex: Option<egui::TextureHandle>,
     about_avatar_tex: Option<egui::TextureHandle>,
     status_msg: Option<String>,
@@ -486,6 +489,7 @@ impl SettingsApp {
             .unwrap_or(0);
 
         let applied_gui_scale = config.appearance.gui_scale.clamp(0.85, 1.75);
+        let edge_handle_hex = format_hex_rgb(config.edge_resize.handle_color);
         let saved_config = config.clone();
         Self {
             config,
@@ -501,6 +505,7 @@ impl SettingsApp {
             new_excluded_app: String::new(),
             applied_gui_scale,
             applied_theme: None,
+            edge_handle_hex,
             about_icon_tex: None,
             about_avatar_tex: None,
             status_msg: None,
@@ -558,6 +563,7 @@ impl SettingsApp {
         self.monitors = enumerate_monitors();
         self.config = Config::load_or_create(&self.monitors);
         self.saved_config = self.config.clone();
+        self.edge_handle_hex = format_hex_rgb(self.config.edge_resize.handle_color);
         self.status_is_error = false;
         if !self.config.monitors.contains_key(&self.selected_monitor_key) {
             if let Some(first) = self.config.monitors.keys().next().cloned() {
@@ -2047,6 +2053,8 @@ impl SettingsApp {
                             self.config.appearance.highlight_color = hi;
                             self.config.appearance.border_color = bd;
                             self.config.appearance.trigger_color = tr;
+                            self.config.edge_resize.handle_color = bd;
+                            self.edge_handle_hex = format_hex_rgb(bd);
                         }
                     });
 
@@ -2119,6 +2127,72 @@ impl SettingsApp {
                             &mut self.config.appearance.trigger_opacity,
                             0.05..=0.85,
                         ));
+                    });
+                });
+
+                ui.add_space(8.0);
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Expanded Resize Borders & Grab Handles").strong());
+                    ui.checkbox(
+                        &mut self.config.edge_resize.enabled,
+                        "Enable expanded window resize boundaries",
+                    );
+                    ui.label(
+                        egui::RichText::new("Expands resize hit-boxes slightly outside the active window's borders; zero overhead when disabled.")
+                            .small()
+                            .weak(),
+                    );
+                    ui.add_enabled_ui(self.config.edge_resize.enabled, |ui| {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label("Grab Padding (px):");
+                            ui.add(egui::Slider::new(
+                                &mut self.config.edge_resize.grab_padding_px,
+                                4..=24,
+                            ));
+                        });
+                        ui.checkbox(
+                            &mut self.config.edge_resize.corners_only,
+                            "Corners only (disable straight-edge grab zones)",
+                        );
+                        ui.checkbox(
+                            &mut self.config.edge_resize.show_handles,
+                            "Show visual colored circular handles on hover",
+                        );
+                        ui.add_enabled_ui(self.config.edge_resize.show_handles, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("Handle Circle Size (px):");
+                                ui.add(egui::Slider::new(
+                                    &mut self.config.edge_resize.handle_size_px,
+                                    12..=36,
+                                ));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Handle Color:");
+                                if ui
+                                    .color_edit_button_srgb(
+                                        &mut self.config.edge_resize.handle_color,
+                                    )
+                                    .changed()
+                                {
+                                    self.edge_handle_hex =
+                                        format_hex_rgb(self.config.edge_resize.handle_color);
+                                }
+                                ui.label("Hex:");
+                                let hex_resp = ui.add(
+                                    egui::TextEdit::singleline(&mut self.edge_handle_hex)
+                                        .desired_width(84.0),
+                                );
+                                if hex_resp.changed() {
+                                    if let Some(rgb) = parse_hex_rgb(&self.edge_handle_hex) {
+                                        self.config.edge_resize.handle_color = rgb;
+                                    }
+                                } else if hex_resp.lost_focus() {
+                                    self.edge_handle_hex =
+                                        format_hex_rgb(self.config.edge_resize.handle_color);
+                                }
+                            });
+                        });
                     });
                 });
 
