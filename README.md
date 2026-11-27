@@ -36,7 +36,7 @@
   </p>
 </div>
 
-> **Status & License:** Released as-is under the [GNU General Public License v3.0 (GPL-3.0)](LICENSE). This project is not actively maintained—forks and community improvements are welcome, provided derivative works remain open source under GPL-3.0.
+> **Note, Status & License:** Built with AI assistance (Antigravity) and released as-is under the [GNU General Public License v3.0 (GPL-3.0)](LICENSE). This project is not actively maintained—forks and community improvements are welcome, provided derivative works remain open source under GPL-3.0.
 
 ---
 
