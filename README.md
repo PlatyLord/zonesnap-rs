@@ -139,6 +139,7 @@ Windows already has basic window snapping, and tools like PowerToys FancyZones a
 - **Wider resize borders & grab handles:** Turn on **Expanded Resize Borders** under **Appearance & Behavior** to add a wider invisible grab area around the outside of your active window (or corners only), plus an optional floating circular grab handle with custom size and color.
 - **Custom Trigger Areas & zone merging:** In Custom Zones mode, you can give a zone a smaller **Trigger** drop pad separate from its full snap area—great for putting a small Center Focus drop pad on top of side columns. Hover within `16px` of a shared border to auto-merge neighbouring zones, or hold `Shift` across multiple zones.
 - **Dynamic Grid & scroll cycling:** Dynamic Grid (`2×2` up to `24×16`, default `12×6`) starts at the cell where you opened the overlay and stretches to wherever you move your mouse. Scroll the mouse wheel while the overlay is up to cycle through layouts on that monitor.
+- **Start with Windows (Opt-In):** Under **Appearance & Behavior**, choose **Off** (default), **Standard (Startup Folder)** (`shell:startup`), or **Administrator (Task Scheduler)** (starts elevated at login with no UAC popup so you can snap Admin windows too). If you later move `zonesnap.exe`, Settings warns you and offers a one-click **Update to Current Location** button.
 - **Visual editor & themes:** Manage layouts per monitor (Add, Duplicate, Copy to Monitor, Presets, Split V/H, Custom Trigger toggle), pick from **10 themes** (`Dark`, `Light`, `Catppuccin Mocha/Macchiato/Frappé/Latte`, `Nord`, `Tokyo Night`, `Gruvbox Dark`, `Solarized Light`), click **Match Overlay Colors** to sync your overlay with your theme, and scale the editor's text from `85%` to `175%`.
 
 </details>
@@ -147,13 +148,14 @@ Windows already has basic window snapping, and tools like PowerToys FancyZones a
 
 ## Troubleshooting & FAQ
 
-- **A window run as Administrator won't snap or move:** Windows blocks normal apps from moving programs that were started as Administrator. If you need to snap Admin windows, run `zonesnap.exe` as Administrator too.
+- **A window run as Administrator won't snap or move:** Windows blocks normal apps from moving programs that were started as Administrator. Either run `zonesnap.exe` as Administrator manually, or turn on **Start with Windows → Administrator (Task Scheduler)** under **Appearance & Behavior**.
 - **Remote Desktop or a fullscreen game acts weird with clicks:** Add its `.exe` filename (like `mstsc.exe` or `game.exe`) under **Appearance & Behavior → Excluded Applications** so ZoneSnap ignores it.
 - **Windows SmartScreen warns that the `.exe` is unrecognized:** ZoneSnap is free and open source, so it isn't signed with a paid code-signing certificate. You can double-check your download against the `sha256` hash listed next to `zonesnap.exe` on the GitHub Release page:
   ```powershell
   Get-FileHash -Algorithm SHA256 .\zonesnap.exe
   ```
 - **Where are my settings saved?** Always in `zones.json`, in the same folder as `zonesnap.exe`.
+- **How do I cleanly remove ZoneSnap (and any startup entry)?** If you turned on **Start with Windows**, switch it back to **Off** under **Appearance & Behavior** before deleting `zonesnap.exe` and `zones.json`. If you already deleted `zonesnap.exe`, open `Win + R` → `shell:startup` and delete `ZoneSnap.lnk` (for Standard mode), or run `schtasks /Delete /TN "ZoneSnap" /F` in an Administrator terminal (for Administrator mode).
 
 ---
 
@@ -170,6 +172,7 @@ Most people never need to touch any of this—the visual Settings window handles
 - **Mixed-DPI & flush snapping:** Runs with `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`, snaps strictly inside each monitor's `rcWork` (never overlapping the taskbar), performs a second-pass `DWMWA_EXTENDED_FRAME_BOUNDS` adjustment across DPI boundaries to eliminate Windows 10/11 drop-shadow gaps, clamps the cursor with `ClipCursor` when holding `Ctrl`, and keys monitor profiles by `<device_name>_<width>x<height>`.
 - **Smooth resizing & responsive hooks:** The low-level hook thread (`WH_MOUSE_LL`) runs at `THREAD_PRIORITY_HIGHEST`, avoids process queries on ordinary clicks, queries real `WM_GETMINMAXINFO` limits with a non-blocking timeout (plus `IsHungAppWindow` guards), and paces resize updates with a final settle pass on mouse-up.
 - **Zero-overhead opt-in resize borders:** When `edge_resize.enabled` is `false`, ZoneSnap registers zero `SetWinEventHook` listeners, allocates zero GDI handles, and bails out with a single atomic check in the mouse hook. When enabled, it uses `SetWinEventHook` with integer bounding-ring math, UIPI checks, and occlusion guards so neighbouring windows stay interactive.
+- **Opt-in Windows startup:** Standard startup uses COM `IShellLinkW` to manage `ZoneSnap.lnk` inside `FOLDERID_Startup` (`shell:startup`) with zero Registry writes; Administrator startup registers a `HighestAvailable` Task Scheduler logon task (`ExecutionTimeLimit=PT0S`, battery limits disabled) via a one-time UAC-elevated helper (`--startup-admin-enable` / `--startup-admin-disable`). State is read live from Windows rather than stored in `zones.json`.
 
 </details>
 
