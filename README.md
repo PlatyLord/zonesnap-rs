@@ -7,7 +7,7 @@
 
   <p>
     <a href="https://github.com/PlatyLord/zonesnap-rs/releases">
-      <img src="https://img.shields.io/badge/release-v1.2.1-38bdf8?style=flat-square" alt="Release v1.2.1" />
+      <img src="https://img.shields.io/badge/release-v1.3.0-38bdf8?style=flat-square" alt="Release v1.3.0" />
     </a>
     <a href="LICENSE">
       <img src="https://img.shields.io/badge/license-GPL--3.0-a6e3a1?style=flat-square" alt="License GPL-3.0" />
@@ -47,6 +47,7 @@
 - **Two Snapping Modes, Unlimited Layouts:** Switch live between **Dynamic Grid** (drag-to-span cells) and **Custom Zones** (with decoupled **Custom Trigger Areas**, `Shift` merge, and `±16px` border merge).
 - **Keyboard or One-Handed Mouse Move & Resize:** Move from anywhere inside a window (`Alt + Left-Drag`) or resize from the nearest edge/corner (`Alt + Right-Drag`), or remap `Alt` to `Mouse Back` / `Mouse Forward` / `Middle Click` so you never have to touch the keyboard.
 - **Flush Mixed-DPI Snapping & Monitor-Lock:** Second-pass `DWMWA_EXTENDED_FRAME_BOUNDS` compensation eliminates Windows 10/11 drop-shadow gaps, `Ctrl` clamps the cursor inside the active monitor (`ClipCursor`), and unsnapping restores the window's prior size.
+- **Expanded Resize Borders & Grab Handles (Opt-In):** Tired of pixel-hunting thin Windows 11 DWM borders? Enable an outward resize hit-ring around the active window—with optional custom-colored circular grab handles—for effortless corner and edge resizing (zero overhead when disabled).
 - **10-Theme Visual Editor & System Tray:** Quick-switch layouts per monitor from the tray, or open the `egui` editor with Light, Dark, and Catppuccin themes plus DPI-friendly text scaling.
 
 ---
@@ -61,6 +62,7 @@
 | **Dynamic Drag-to-Span Grid** | ✅ | ❌ | ✅ | ❌ | ❌ |
 | **Decoupled Trigger vs. Snap Bounds** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Move & Edge/Corner Resize (`Alt` or Mouse Button)** | ✅ | ❌ | ❌ | ✅ | ❌ |
+| **Expanded Resize Borders & Grab Handles** | ✅ (opt-in) | ❌ | ❌ | ❌ | ❌ |
 | **Scroll-Wheel Layout Cycling** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Ctrl Monitor-Lock (`ClipCursor`)** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Open Source & Free** | ✅ GPL-3.0 | ✅ MIT | ❌ Closed | ✅ GPL-3.0 | ❌ Proprietary |
@@ -131,6 +133,7 @@
 ### Highlights & Workflow Notes
 
 - **One-Handed Mouse-Button Modifier:** Remap `move_resize_modifier` to `Mouse Back`, `Mouse Forward`, or `Middle Click` in **Shortcuts & Modifiers** to hold that mouse button instead of `Alt` for Move, Resize, Top-Edge Maximize, and Overlay Hand-Off. Quick taps without dragging still fire your normal Back/Forward/Middle click on release.
+- **Expanded Resize Borders & Grab Handles:** Turn on **Expanded Resize Borders** in **Appearance** to widen the invisible grab zone outside the active foreground window's DWM bounds (or limit to corners only) and optionally display a floating circular grab handle with custom size and hex color. Disabled by default so it uses zero WinEvent hooks or extra GDI resources unless opted into.
 - **Custom Trigger Areas & Merging:** In Custom Zones mode, assign a compact **Trigger** pad separate from a zone's full **Snap Output** bounds (ideal for a small Center Focus drop pad over side columns), with customizable colors and opacities. Hover within `16px` of a shared border to auto-merge adjacent zones, or hold `Shift` across multiple zones.
 - **Dynamic Grid & Scroll Cycling:** Dynamic Grid (`2×2` up to `24×16`, default `12×6`) anchors at your starting cell and spans to the current cell. Scroll the mouse wheel while the overlay is open to cycle layouts on that monitor.
 - **Mixed-DPI, Taskbar Safety & Unsnap Restore:** Monitor profiles key by `<device_name>_<width>x<height>` and snap inside `rcWork` (never covering the taskbar), with a second-pass `DWMWA_EXTENDED_FRAME_BOUNDS` adjustment across DPI boundaries and automatic pre-snap size restoration when dragging a window away.
@@ -169,6 +172,14 @@
     "move_resize_modifier": "Alt",
     "monitor_lock_modifier": "Ctrl",
     "corner_resize_modifier": "Shift"
+  },
+  "edge_resize": {
+    "enabled": false,
+    "grab_padding_px": 10,
+    "corners_only": false,
+    "show_handles": true,
+    "handle_size_px": 20,
+    "handle_color": [56, 189, 248]
   },
   "monitors": {
     "\\\\.\\DISPLAY1_2560x1440": {
@@ -224,6 +235,12 @@
 | `hotkeys`    | `move_resize_modifier`   | `"Alt"`                          | Modifier for Move & Resize (`Alt`, `Ctrl`, `Shift`, `Win`, `Mouse Back`, `Mouse Forward`, `Middle Click`)                                        |
 | `hotkeys`    | `monitor_lock_modifier`  | `"Ctrl"`                         | Modifier to clamp cursor to monitor (`Ctrl`, `Shift`, `Alt`, `Win`)                                                                              |
 | `hotkeys`    | `corner_resize_modifier` | `"Shift"`                        | Extra modifier held during Move/Resize + `Right-Drag` to force nearest-corner resize (`Shift`, `Ctrl`, `Alt`, `Win`, `Disabled`)                 |
+| `edge_resize`| `enabled`                | `false`                          | Enable outward-expanded resize hit-boxes around the foreground window (zero hooks/overhead when `false`)                                          |
+| `edge_resize`| `grab_padding_px`        | `10`                             | Outward grab ring thickness outside the window's visible DWM bounds in logical pixels (`4`–`32`)                                                 |
+| `edge_resize`| `corners_only`           | `false`                          | Restrict expanded resize hit-boxes and handles to the four corners (`true`) or allow all 8 edges and corners (`false`)                           |
+| `edge_resize`| `show_handles`           | `true`                           | Show a floating circular visual grab handle when hovering an eligible expanded edge/corner                                                       |
+| `edge_resize`| `handle_size_px`         | `20`                             | Diameter of the floating circular grab handle in logical pixels (`12`–`36`)                                                                      |
+| `edge_resize`| `handle_color`           | `[56, 189, 248]`                 | RGB color `[R, G, B]` of the floating grab handle (synced via hex picker or **Match Overlay Colors** in **Appearance**)                         |
 | `monitors`   | `active_layout_index`    | `0`                              | 0-based index of the active layout for that monitor                                                                                              |
 | `monitors`   | `layouts`                | 3 starter layouts                | List of `dynamic_grid` (`cols`, `rows`) or `custom_zones` (`[x1, y1, x2, y2]` or `{ bounds, trigger }`)                                          |
 
@@ -254,7 +271,7 @@ cargo test
 cargo build --release
 ```
 
-The standalone GUI executable is written to `target\release\zonesnap.exe` (statically linking the MSVC CRT via `.cargo/config.toml`). Pushing a version tag (e.g. `v1.2.1`) triggers [`.github/workflows/release.yml`](.github/workflows/release.yml) to run `cargo test`, build `zonesnap.exe`, extract release notes from [CHANGELOG.md](CHANGELOG.md), and publish a GitHub Release automatically.
+The standalone GUI executable is written to `target\release\zonesnap.exe` (statically linking the MSVC CRT via `.cargo/config.toml`). Pushing a version tag (e.g. `v1.3.0`) triggers [`.github/workflows/release.yml`](.github/workflows/release.yml) to run `cargo test`, build `zonesnap.exe`, extract release notes from [CHANGELOG.md](CHANGELOG.md), and publish a GitHub Release automatically.
 
 ---
 

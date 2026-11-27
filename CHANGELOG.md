@@ -2,6 +2,19 @@
 
 All notable changes to ZoneSnap are documented in this file.
 
+## [v1.3.0] - 2026-11-27
+
+**Goal:** Eliminate pixel-hunting on thin Windows 11 DWM borders by adding opt-in outward-expanded resize hit-boxes and optional floating circular grab handles around the active foreground window—with zero idle CPU or memory overhead when disabled.
+
+### Added
+- **Expanded Resize Borders (Phase 1):** Opt-in outward resize hit-ring around the active foreground window (`edge_resize.enabled`, default `false`), supporting configurable outward padding (`grab_padding_px`, `4`–`32` px), a corners-only mode (`corners_only`), native directional resize cursors, and smooth resize reuse via ZoneSnap's existing `AltResize` session (no extra window-moving path).
+- **Optional Visual Grab Handles (Phase 2):** Floating circular layered GDI grab handle (`edge_resize.show_handles`) that appears when hovering an eligible outer edge or corner, with configurable diameter (`handle_size_px`, `12`–`36` px) and customizable RGB/hex color (`handle_color`).
+- **Low-Overhead Architecture:** Zero WinEvent hooks, zero GDI handle allocation, and an immediate lock-free atomic bailout in the low-level mouse hook when disabled; when enabled, uses `SetWinEventHook` + integer bounding-ring math (`O(1)` per `WM_MOUSEMOVE`) plus UIPI/elevation checks and occlusion guards so neighboring windows stay interactive.
+- **Settings Editor Integration:** Added the **Expanded Resize Borders & Grab Handles** section to the **Appearance** tab (including a hex color picker and **Match Overlay Colors** sync).
+
+### Documentation
+- Updated [README.md](README.md) (`Why ZoneSnap?`, `How ZoneSnap Compares`, `Highlights & Workflow Notes`, `Configuration (zones.json)`, and release badge) to highlight the opt-in Expanded Resize Borders & Grab Handles feature.
+
 ## [v1.2.1] - 2026-11-27
 
 **Goal:** Make active window snapping, dragging, and resizing noticeably snappier and smoother—matching or beating AltSnap under load—while keeping idle memory under ~2 MB and eliminating resize artifacts.
