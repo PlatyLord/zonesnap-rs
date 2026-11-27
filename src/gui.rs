@@ -3,6 +3,7 @@ use crate::config::{
 };
 use crate::hotkeys::{is_mouse_vk, modifier_to_vk, HotkeySpec};
 use crate::monitor::{enumerate_monitors, MonitorInfo};
+use crate::startup::{self, StartupMode, StartupStatus};
 use eframe::egui::{self, Color32, Pos2, Rect as EguiRect, Sense, Stroke, Vec2};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, WPARAM};
@@ -470,6 +471,8 @@ struct SettingsApp {
     status_msg: Option<String>,
     status_is_error: bool,
     reload_msg: u32,
+    startup_status: StartupStatus,
+    startup_feedback: Option<(String, bool)>,
 }
 
 impl SettingsApp {
@@ -491,6 +494,7 @@ impl SettingsApp {
         let applied_gui_scale = config.appearance.gui_scale.clamp(0.85, 1.75);
         let edge_handle_hex = format_hex_rgb(config.edge_resize.handle_color);
         let saved_config = config.clone();
+        let startup_status = startup::query_startup_status();
         Self {
             config,
             saved_config,
@@ -511,6 +515,8 @@ impl SettingsApp {
             status_msg: None,
             status_is_error: false,
             reload_msg,
+            startup_status,
+            startup_feedback: None,
         }
     }
 
@@ -2000,7 +2006,7 @@ impl SettingsApp {
                                 ui.add_space(2.0);
                                 ui.label(
                                     egui::RichText::new(
-                                        "Zero installer, zero external DLL dependencies, and zero %APPDATA% or Windows Registry writes.",
+                                        "Zero installer, zero external DLL dependencies, and zero Windows Registry writes (Windows startup integration is strictly opt-in).",
                                     )
                                     .small()
                                     .color(palette.muted_text),
@@ -2017,6 +2023,7 @@ impl SettingsApp {
     }
 
     fn render_appearance_tab(&mut self, ui: &mut egui::Ui) {
+        let palette = theme_palette(self.config.appearance.gui_theme);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -2207,6 +2214,181 @@ impl SettingsApp {
                         &mut self.config.behavior.drag_top_maximize,
                         "Maximize window when Alt-dragging to the top edge of a monitor",
                     );
+                });
+
+                ui.add_space(8.0);
+                ui.group(|ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new("Start with Windows").strong());
+                        let (role_text, role_color) = if self.startup_status.running_as_admin {
+                            ("Currently running as: Administrator", palette.accent)
+                        } else {
+                            ("Currently running as: Standard", palette.muted_text)
+                        };
+                        ui.label(egui::RichText::new(role_text).small().color(role_color));
+                    });
+
+                    let current_mode = self.startup_status.mode;
+                    let mut requested_mode: Option<StartupMode> = None;
+                    ui.horizontal_wrapped(|ui| {
+                        for (mode, label) in [
+                            (StartupMode::Off, "Off"),
+                            (StartupMode::Standard, "Standard (Startup Folder)"),
+                            (StartupMode::Administrator, "Administrator (Task Scheduler)"),
+                        ] {
+                            if ui.selectable_label(current_mode == mode, label).clicked()
+                                && current_mode != mode
+                            {
+                                requested_mode = Some(mode);
+                            }
+                        }
+                    });
+
+                    if let Some(target_mode) = requested_mode {
+                        match startup::apply_startup_mode(target_mode) {
+                            Ok((st, msg)) => {
+                                self.startup_status = st;
+                                self.startup_feedback = Some((msg, false));
+                            }
+                            Err(err) => {
+                                self.startup_status = startup::query_startup_status();
+                                self.startup_feedback = Some((err, true));
+                            }
+                        }
+                    }
+
+                    ui.label(
+                        egui::RichText::new(
+                            "Applied immediately and stored in Windows (not saved in zones.json) so ZoneSnap stays portable.",
+                        )
+                        .small()
+                        .weak(),
+                    );
+
+                    if self.startup_status.path_mismatch {
+                        ui.add_space(4.0);
+                        let warn_fill = Color32::from_rgba_unmultiplied(
+                            palette.warn.r(),
+                            palette.warn.g(),
+                            palette.warn.b(),
+                            24,
+                        );
+                        egui::Frame::none()
+                            .fill(warn_fill)
+                            .stroke(Stroke::new(1.0_f32, palette.warn))
+                            .rounding(6.0)
+                            .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Warning: Windows startup currently points to a different location:",
+                                    )
+                                    .strong()
+                                    .color(palette.warn),
+                                );
+                                if let Some(reg) = &self.startup_status.registered_path {
+                                    ui.label(
+                                        egui::RichText::new(reg.display().to_string())
+                                            .monospace()
+                                            .small(),
+                                    );
+                                }
+                                if let Some(cur) = &self.startup_status.current_exe {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "This copy: {}",
+                                            cur.display()
+                                        ))
+                                        .monospace()
+                                        .small()
+                                        .weak(),
+                                    );
+                                }
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Because you moved zonesnap.exe, startup won't launch this copy until you update it.",
+                                    )
+                                    .small(),
+                                );
+                                ui.add_space(4.0);
+                                if ui.button("Update to Current Location").clicked() {
+                                    match startup::apply_startup_mode(self.startup_status.mode) {
+                                        Ok((st, msg)) => {
+                                            self.startup_status = st;
+                                            self.startup_feedback = Some((msg, false));
+                                        }
+                                        Err(err) => {
+                                            self.startup_status = startup::query_startup_status();
+                                            self.startup_feedback = Some((err, true));
+                                        }
+                                    }
+                                }
+                            });
+                    }
+
+                    if self.startup_status.mode != StartupMode::Off {
+                        ui.add_space(4.0);
+                        if !self.startup_status.path_mismatch {
+                            if let Some(reg) = &self.startup_status.registered_path {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "Registered path: {}",
+                                        reg.display()
+                                    ))
+                                    .monospace()
+                                    .small()
+                                    .weak(),
+                                );
+                            }
+                        }
+
+                        match self.startup_status.mode {
+                            StartupMode::Standard => {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Note: If you move zonesnap.exe to another folder, come back here to update it. Switch back to Off before deleting zonesnap.exe so no shortcut is left behind.",
+                                    )
+                                    .small()
+                                    .weak(),
+                                );
+                                if self.startup_status.startup_folder.is_some()
+                                    && ui.button("Open Startup Folder").clicked()
+                                {
+                                    if let Err(err) = startup::open_startup_folder() {
+                                        self.startup_feedback = Some((err, true));
+                                    }
+                                }
+                            }
+                            StartupMode::Administrator => {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Starts with Administrator rights at login (no UAC popup) so ZoneSnap can also snap Admin windows. If you move zonesnap.exe to another folder, come back here to update it—and switch back to Off before deleting zonesnap.exe so the scheduled task isn't left behind.",
+                                    )
+                                    .small()
+                                    .weak(),
+                                );
+                            }
+                            StartupMode::Off => {}
+                        }
+                    } else {
+                        ui.label(
+                            egui::RichText::new(
+                                "Off by default. Standard adds a shortcut to shell:startup; Administrator uses Windows Task Scheduler so ZoneSnap can also manage elevated (Admin) windows.",
+                            )
+                            .small()
+                            .weak(),
+                        );
+                    }
+
+                    if let Some((msg, is_err)) = &self.startup_feedback {
+                        ui.add_space(4.0);
+                        let color = if *is_err {
+                            palette.error
+                        } else {
+                            palette.success
+                        };
+                        ui.label(egui::RichText::new(msg).small().color(color));
+                    }
                 });
 
                 ui.add_space(8.0);

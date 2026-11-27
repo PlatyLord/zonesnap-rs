@@ -8,7 +8,6 @@ mod hotkeys;
 mod icon;
 mod monitor;
 mod overlay;
-#[allow(dead_code)]
 mod startup;
 mod tray;
 mod window_ops;
