@@ -191,6 +191,7 @@ struct DaemonState {
     overlay_session: Option<OverlaySession>,
     cursor_locked: bool,
     edge_resize: EdgeResizeManager,
+    settings_child: Option<std::process::Child>,
 }
 
 impl DaemonState {
@@ -228,6 +229,7 @@ impl DaemonState {
             overlay_session: None,
             cursor_locked: false,
             edge_resize: EdgeResizeManager::new(),
+            settings_child: None,
         }
     }
 
@@ -783,7 +785,12 @@ impl DaemonState {
         }
     }
 
-    fn open_settings(&self) {
+    fn open_settings(&mut self) {
+        if let Some(child) = self.settings_child.as_mut() {
+            if matches!(child.try_wait(), Ok(Some(_)) | Err(_)) {
+                self.settings_child = None;
+            }
+        }
         unsafe {
             let title: Vec<u16> = "ZoneSnap \u{2014} Settings & Zone Editor"
                 .encode_utf16()
@@ -798,7 +805,24 @@ impl DaemonState {
             }
         }
         if let Ok(exe) = std::env::current_exe() {
-            let _ = std::process::Command::new(exe).arg("--settings").spawn();
+            if let Ok(child) = std::process::Command::new(exe).arg("--settings").spawn() {
+                self.settings_child = Some(child);
+            }
+        }
+    }
+
+    fn close_settings_if_open(&mut self) {
+        gui::close_settings_window();
+        if let Some(mut child) = self.settings_child.take() {
+            for _ in 0..20 {
+                match child.try_wait() {
+                    Ok(Some(_)) => return,
+                    Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                    Err(_) => break,
+                }
+            }
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 
@@ -1372,8 +1396,8 @@ unsafe extern "system" fn daemon_wnd_proc(
                 }
             } else if ev == WM_LBUTTONDBLCLK {
                 DAEMON_STATE.with(|cell| {
-                    if let Ok(guard) = cell.try_borrow() {
-                        if let Some(state) = guard.as_ref() {
+                    if let Ok(mut guard) = cell.try_borrow_mut() {
+                        if let Some(state) = guard.as_mut() {
                             state.open_settings();
                         }
                     }
@@ -1396,8 +1420,8 @@ unsafe extern "system" fn daemon_wnd_proc(
             match cmd {
                 IDM_SETTINGS => {
                     DAEMON_STATE.with(|cell| {
-                        if let Ok(guard) = cell.try_borrow() {
-                            if let Some(state) = guard.as_ref() {
+                        if let Ok(mut guard) = cell.try_borrow_mut() {
+                            if let Some(state) = guard.as_mut() {
                                 state.open_settings();
                             }
                         }
@@ -1413,6 +1437,13 @@ unsafe extern "system" fn daemon_wnd_proc(
                     });
                 }
                 IDM_EXIT => {
+                    DAEMON_STATE.with(|cell| {
+                        if let Ok(mut guard) = cell.try_borrow_mut() {
+                            if let Some(state) = guard.as_mut() {
+                                state.close_settings_if_open();
+                            }
+                        }
+                    });
                     PostQuitMessage(0);
                 }
                 _ => {}
@@ -1596,7 +1627,12 @@ fn main() {
             DispatchMessageW(&msg);
         }
         DAEMON_STATE.with(|cell| {
-            *cell.borrow_mut() = None;
+            if let Ok(mut guard) = cell.try_borrow_mut() {
+                if let Some(state) = guard.as_mut() {
+                    state.close_settings_if_open();
+                }
+                *guard = None;
+            }
         });
         let _ = DestroyWindow(daemon_hwnd);
     }

@@ -10,7 +10,7 @@ use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowExW, FindWindowW, PostMessageW, SetForegroundWindow, ShowWindow, HWND_MESSAGE,
-    SW_RESTORE,
+    SW_RESTORE, WM_CLOSE,
 };
 
 const SETTINGS_TITLE: &str = "ZoneSnap \u{2014} Settings & Zone Editor";
@@ -2609,6 +2609,21 @@ impl eframe::App for SettingsApp {
             SettingsTab::Appearance => self.render_appearance_tab(ui),
             SettingsTab::About => self.render_about_tab(ui),
         });
+    }
+}
+
+/// Ask any open Settings & Zone Editor window to close cleanly.
+pub fn close_settings_window() {
+    let wide_title: Vec<u16> = SETTINGS_TITLE
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        if let Ok(existing) = FindWindowW(PCWSTR::null(), PCWSTR(wide_title.as_ptr())) {
+            if !existing.0.is_null() {
+                let _ = PostMessageW(existing, WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
+        }
     }
 }
 
