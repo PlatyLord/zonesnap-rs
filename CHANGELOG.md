@@ -2,6 +2,24 @@
 
 All notable changes to ZoneSnap are documented in this file.
 
+## [v1.2.1] - 2026-11-27
+
+**Goal:** Make active window snapping, dragging, and resizing noticeably snappier and smoother—matching or beating AltSnap under load—while keeping idle memory under ~2 MB and eliminating resize artifacts.
+
+### Performance
+- **SIMD-Optimized Release Profile:** Switched `[profile.release]` to `opt-level = 3` (enabling LLVM SIMD auto-vectorization for faster 1440p/4K overlay blending while keeping the single-file `.exe` around ~4 MB and ~1.5 MB idle RAM).
+- **Zero-Stall Mouse Hook:** Raised the `zonesnap-hook` thread priority to `THREAD_PRIORITY_HIGHEST` and removed `OpenProcess` / `QueryFullProcessImageNameW` from normal Windows left- and right-clicks in `WH_MOUSE_LL`.
+- **Cached Daemon State:** Cached the active `MonitorInfo` list, window `can_maximize` state, and `zones.json` path in `DaemonState`, eliminating per-move syscalls and synchronous disk `stat` calls when opening the overlay.
+- **Reusable Overlay Text Scratch:** Cached the GDI scratch DC, 32-bit DIB section, and `HFONT`s (`TextScratch`) across overlay badge draws (released cleanly on the 10s idle eviction timer).
+
+### Fixed
+- **Smoother, Artifact-Free Resizing:** Queried each window's real `WM_GETMINMAXINFO` minimum track size (`30 ms` non-blocking timeout) to stop Left/Top-edge jitter when shrinking apps past their minimum dimensions, added `IsHungAppWindow` safety guards, and added an `8 ms` (~120 Hz) resize ceiling with a 1-shot flush timer (`TIMER_RESIZE_FLUSH`) plus `RightUp` final settle while keeping synchronous back-pressure so slower apps like File Explorer never build up laggy queues.
+
+### Added
+- **About & Credits Avatar:** Embedded a compact `10 KB` circular author avatar (`assets/avatar.bin`) loaded lazily in the **About & Credits** tab.
+
+---
+
 ## [v1.2.0] - 2026-11-26
 
 ### Added

@@ -463,6 +463,7 @@ struct SettingsApp {
     applied_gui_scale: f32,
     applied_theme: Option<GuiTheme>,
     about_icon_tex: Option<egui::TextureHandle>,
+    about_avatar_tex: Option<egui::TextureHandle>,
     status_msg: Option<String>,
     status_is_error: bool,
     reload_msg: u32,
@@ -501,6 +502,7 @@ impl SettingsApp {
             applied_gui_scale,
             applied_theme: None,
             about_icon_tex: None,
+            about_avatar_tex: None,
             status_msg: None,
             status_is_error: false,
             reload_msg,
@@ -1873,6 +1875,16 @@ impl SettingsApp {
                 egui::TextureOptions::LINEAR,
             ));
         }
+        if self.about_avatar_tex.is_none() {
+            let sz = crate::icon::AVATAR_SIZE as usize;
+            let rgba = crate::icon::author_avatar_rgba();
+            let img = egui::ColorImage::from_rgba_unmultiplied([sz, sz], &rgba);
+            self.about_avatar_tex = Some(ui.ctx().load_texture(
+                "about_author_avatar",
+                img,
+                egui::TextureOptions::LINEAR,
+            ));
+        }
 
         let path_str = config_path()
             .map(|p| p.display().to_string())
@@ -1944,7 +1956,11 @@ impl SettingsApp {
 
                             about_card(ui, &|ui| {
                                 ui.label(egui::RichText::new("CREDITS").small().strong().color(palette.muted_text));
-                                ui.add_space(4.0);
+                                ui.add_space(6.0);
+                                if let Some(avatar) = &self.about_avatar_tex {
+                                    ui.image((avatar.id(), Vec2::splat(52.0)));
+                                    ui.add_space(6.0);
+                                }
                                 ui.label(egui::RichText::new("Author: Tom (PlatyLord)").strong());
                                 ui.label("Co-Built With: Antigravity (Google DeepMind)");
                             });

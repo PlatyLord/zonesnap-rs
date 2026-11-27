@@ -9,7 +9,8 @@ use windows::Win32::Graphics::Gdi::{
     SelectObject, SetBkMode, SetTextColor, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
     DEFAULT_CHARSET, DEFAULT_PITCH, DIB_RGB_COLORS, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE,
-    DT_VCENTER, FF_SWISS, FW_SEMIBOLD, HBITMAP, HDC, HGDIOBJ, OUT_DEFAULT_PRECIS, TRANSPARENT,
+    DT_VCENTER, FF_SWISS, FW_SEMIBOLD, HBITMAP, HDC, HFONT, HGDIOBJ, OUT_DEFAULT_PRECIS,
+    TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -198,6 +199,140 @@ struct FrameKey {
     toast_text: Option<String>,
 }
 
+struct TextScratch {
+    hdc: HDC,
+    hbmp: HBITMAP,
+    old_bmp: HGDIOBJ,
+    bits_ptr: *mut u32,
+    w: i32,
+    h: i32,
+    fonts: Vec<(i32, HFONT)>,
+}
+
+impl TextScratch {
+    const fn new() -> Self {
+        Self {
+            hdc: HDC(std::ptr::null_mut()),
+            hbmp: HBITMAP(std::ptr::null_mut()),
+            old_bmp: HGDIOBJ(std::ptr::null_mut()),
+            bits_ptr: std::ptr::null_mut(),
+            w: 0,
+            h: 0,
+            fonts: Vec::new(),
+        }
+    }
+
+    fn is_allocated(&self) -> bool {
+        !self.hdc.0.is_null() || !self.fonts.is_empty()
+    }
+
+    fn release_surface(&mut self) {
+        unsafe {
+            if !self.hdc.0.is_null() {
+                if !self.old_bmp.0.is_null() {
+                    SelectObject(self.hdc, self.old_bmp);
+                    self.old_bmp = HGDIOBJ::default();
+                }
+                if !self.hbmp.0.is_null() {
+                    let _ = DeleteObject(HGDIOBJ(self.hbmp.0));
+                    self.hbmp = HBITMAP::default();
+                }
+                let _ = DeleteDC(self.hdc);
+                self.hdc = HDC::default();
+            }
+        }
+        self.bits_ptr = std::ptr::null_mut();
+        self.w = 0;
+        self.h = 0;
+    }
+
+    fn release(&mut self) {
+        self.release_surface();
+        unsafe {
+            for (_, hf) in self.fonts.drain(..) {
+                if !hf.0.is_null() {
+                    let _ = DeleteObject(HGDIOBJ(hf.0));
+                }
+            }
+        }
+    }
+
+    fn ensure_buffer(&mut self, min_w: i32, min_h: i32) -> bool {
+        let req_w = min_w.max(256);
+        let req_h = min_h.max(64);
+        if !self.bits_ptr.is_null() && self.w >= req_w && self.h >= req_h {
+            return true;
+        }
+        let target_w = req_w.max(self.w);
+        let target_h = req_h.max(self.h);
+        self.release_surface();
+        unsafe {
+            let hdc = CreateCompatibleDC(HDC::default());
+            if hdc.0.is_null() {
+                return false;
+            }
+            let mut bmi = BITMAPINFO::default();
+            bmi.bmiHeader = BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: target_w,
+                biHeight: -target_h,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            };
+            let mut bits: *mut c_void = std::ptr::null_mut();
+            let Ok(hbmp) = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) else {
+                let _ = DeleteDC(hdc);
+                return false;
+            };
+            if bits.is_null() {
+                let _ = DeleteObject(HGDIOBJ(hbmp.0));
+                let _ = DeleteDC(hdc);
+                return false;
+            }
+            let old_bmp = SelectObject(hdc, HGDIOBJ(hbmp.0));
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, COLORREF(0x00FF_FFFF));
+            self.hdc = hdc;
+            self.hbmp = hbmp;
+            self.old_bmp = old_bmp;
+            self.bits_ptr = bits as *mut u32;
+            self.w = target_w;
+            self.h = target_h;
+            true
+        }
+    }
+
+    fn get_font(&mut self, font_px: i32) -> HFONT {
+        for &(px, hf) in &self.fonts {
+            if px == font_px {
+                return hf;
+            }
+        }
+        let hf = unsafe {
+            CreateFontW(
+                -font_px,
+                0,
+                0,
+                0,
+                FW_SEMIBOLD.0 as i32,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET.0 as u32,
+                OUT_DEFAULT_PRECIS.0 as u32,
+                CLIP_DEFAULT_PRECIS.0 as u32,
+                CLEARTYPE_QUALITY.0 as u32,
+                (DEFAULT_PITCH.0 | FF_SWISS.0) as u32,
+                w!("Segoe UI"),
+            )
+        };
+        self.fonts.push((font_px, hf));
+        hf
+    }
+}
+
 pub struct OverlayWindow {
     hwnd: HWND,
     visible: bool,
@@ -212,6 +347,7 @@ pub struct OverlayWindow {
     cached_base_key: Option<BaseLayerKey>,
     last_frame_key: Option<FrameKey>,
     last_maximize_key: Option<(Rect, OverlayStyle)>,
+    text_scratch: TextScratch,
 }
 
 unsafe extern "system" fn overlay_wnd_proc(
@@ -272,6 +408,7 @@ impl OverlayWindow {
                 cached_base_key: None,
                 last_frame_key: None,
                 last_maximize_key: None,
+                text_scratch: TextScratch::new(),
             })
         }
     }
@@ -375,7 +512,10 @@ impl OverlayWindow {
     }
 
     pub fn has_allocated_buffers(&self) -> bool {
-        !self.bits_ptr.is_null() || self.cached_base.capacity() > 0 || self.current_work.width() > 1
+        !self.bits_ptr.is_null()
+            || self.cached_base.capacity() > 0
+            || self.current_work.width() > 1
+            || self.text_scratch.is_allocated()
     }
 
     /// Release all multi-megabyte backing surfaces and shrink DWM's cached layered
@@ -421,6 +561,7 @@ impl OverlayWindow {
         }
 
         self.release_dib();
+        self.text_scratch.release();
         self.cached_base = Vec::new();
         self.cached_base_key = None;
         self.last_frame_key = None;
@@ -479,6 +620,7 @@ impl OverlayWindow {
                 180,
             );
             draw_aa_text_on_bgra(
+                &mut self.text_scratch,
                 buf,
                 w,
                 h,
@@ -557,6 +699,7 @@ impl OverlayWindow {
         if self.cached_base_key.as_ref() != Some(&base_key) || self.cached_base.len() != total_px {
             self.cached_base.resize(total_px, 0);
             paint_base_layer(
+                &mut self.text_scratch,
                 &mut self.cached_base,
                 w,
                 h,
@@ -570,7 +713,7 @@ impl OverlayWindow {
         unsafe {
             let buf = std::slice::from_raw_parts_mut(self.bits_ptr, total_px);
             buf.copy_from_slice(&self.cached_base);
-            paint_dynamic_layer(buf, w, h, state);
+            paint_dynamic_layer(&mut self.text_scratch, buf, w, h, state);
 
             let pt_dst = POINT {
                 x: state.work.left,
@@ -603,6 +746,7 @@ impl OverlayWindow {
 
 impl Drop for OverlayWindow {
     fn drop(&mut self) {
+        self.text_scratch.release();
         self.release_dib();
         if !self.hwnd.0.is_null() {
             unsafe {
@@ -796,8 +940,9 @@ fn fill_rounded_rect(
 }
 
 /// Draw crisp anti-aliased white/tinted text onto a 32-bit premultiplied BGRA buffer
-/// using a scratch black-background GDI DIB whose luminance becomes alpha.
+/// reusing `scratch`'s cached GDI DC, DIB section, and `HFONT`s.
 fn draw_aa_text_on_bgra(
+    scratch: &mut TextScratch,
     buf: &mut [u32],
     bw: i32,
     bh: i32,
@@ -812,98 +957,64 @@ fn draw_aa_text_on_bgra(
     if rw <= 0 || rh <= 0 || text.is_empty() {
         return;
     }
+    if !scratch.ensure_buffer(rw, rh) || scratch.bits_ptr.is_null() {
+        return;
+    }
     unsafe {
-        let hdc = CreateCompatibleDC(HDC::default());
-        if hdc.0.is_null() {
-            return;
+        let scratch_w = scratch.w;
+        let bits = std::slice::from_raw_parts_mut(scratch.bits_ptr, (scratch_w * scratch.h) as usize);
+        for sy in 0..rh {
+            let off = (sy * scratch_w) as usize;
+            bits[off..off + rw as usize].fill(0);
         }
-        let mut bmi = BITMAPINFO::default();
-        bmi.bmiHeader = BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: rw,
-            biHeight: -rh,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
-            ..Default::default()
+
+        let font = scratch.get_font(font_px);
+        let old_font = SelectObject(scratch.hdc, HGDIOBJ(font.0));
+
+        let mut wide: Vec<u16> = text.encode_utf16().collect();
+        let mut tr = RECT {
+            left: 0,
+            top: 0,
+            right: rw,
+            bottom: rh,
         };
-        let mut bits: *mut c_void = std::ptr::null_mut();
-        let Ok(hbmp) = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) else {
-            let _ = DeleteDC(hdc);
-            return;
-        };
+        DrawTextW(
+            scratch.hdc,
+            &mut wide,
+            &mut tr,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
 
-        if !bits.is_null() {
-            let old_bmp = SelectObject(hdc, HGDIOBJ(hbmp.0));
-            let scratch = std::slice::from_raw_parts_mut(bits as *mut u32, (rw * rh) as usize);
-            scratch.fill(0);
-
-            let font = CreateFontW(
-                -font_px,
-                0,
-                0,
-                0,
-                FW_SEMIBOLD.0 as i32,
-                0,
-                0,
-                0,
-                DEFAULT_CHARSET.0 as u32,
-                OUT_DEFAULT_PRECIS.0 as u32,
-                CLIP_DEFAULT_PRECIS.0 as u32,
-                CLEARTYPE_QUALITY.0 as u32,
-                (DEFAULT_PITCH.0 | FF_SWISS.0) as u32,
-                w!("Segoe UI"),
-            );
-            let old_font = SelectObject(hdc, HGDIOBJ(font.0));
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, COLORREF(0x00FF_FFFF));
-
-            let mut wide: Vec<u16> = text.encode_utf16().collect();
-            let mut tr = RECT {
-                left: 0,
-                top: 0,
-                right: rw,
-                bottom: rh,
-            };
-            DrawTextW(
-                hdc,
-                &mut wide,
-                &mut tr,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-            );
-
-            for sy in 0..rh {
-                let dy = ry + sy;
-                if dy < 0 || dy >= bh {
+        for sy in 0..rh {
+            let dy = ry + sy;
+            if dy < 0 || dy >= bh {
+                continue;
+            }
+            let row_off = (sy * scratch_w) as usize;
+            let dst_row = (dy * bw) as usize;
+            for sx in 0..rw {
+                let dx = rx + sx;
+                if dx < 0 || dx >= bw {
                     continue;
                 }
-                for sx in 0..rw {
-                    let dx = rx + sx;
-                    if dx < 0 || dx >= bw {
-                        continue;
-                    }
-                    let px = scratch[(sy * rw + sx) as usize];
-                    let r = ((px >> 16) & 0xFF) as u32;
-                    let g = ((px >> 8) & 0xFF) as u32;
-                    let b = (px & 0xFF) as u32;
-                    let lum = ((r * 77 + g * 150 + b * 29) >> 8).min(255) as u8;
-                    if lum > 0 {
-                        let dst_idx = (dy * bw + dx) as usize;
-                        buf[dst_idx] = blend_pixel(buf[dst_idx], color[0], color[1], color[2], lum);
-                    }
+                let px = bits[row_off + sx as usize];
+                let r = ((px >> 16) & 0xFF) as u32;
+                let g = ((px >> 8) & 0xFF) as u32;
+                let b = (px & 0xFF) as u32;
+                let lum = ((r * 77 + g * 150 + b * 29) >> 8).min(255) as u8;
+                if lum > 0 {
+                    let dst_idx = dst_row + dx as usize;
+                    buf[dst_idx] = blend_pixel(buf[dst_idx], color[0], color[1], color[2], lum);
                 }
             }
-
-            SelectObject(hdc, old_font);
-            let _ = DeleteObject(HGDIOBJ(font.0));
-            SelectObject(hdc, old_bmp);
         }
-        let _ = DeleteObject(HGDIOBJ(hbmp.0));
-        let _ = DeleteDC(hdc);
+
+        SelectObject(scratch.hdc, old_font);
     }
 }
 
 fn paint_base_layer(
+    scratch: &mut TextScratch,
     buf: &mut [u32],
     w: i32,
     h: i32,
@@ -947,6 +1058,7 @@ fn paint_base_layer(
                 let badge_w = 48.min(rw);
                 let badge_h = 36.min(rh);
                 draw_aa_text_on_bgra(
+                    scratch,
                     buf,
                     w,
                     h,
@@ -991,6 +1103,7 @@ fn paint_base_layer(
                 let badge_w = 48.min(rw);
                 let badge_h = 36.min(rh);
                 draw_aa_text_on_bgra(
+                    scratch,
                     buf,
                     w,
                     h,
@@ -1007,7 +1120,13 @@ fn paint_base_layer(
     }
 }
 
-fn paint_dynamic_layer(buf: &mut [u32], w: i32, h: i32, state: &OverlayRenderState<'_>) {
+fn paint_dynamic_layer(
+    scratch: &mut TextScratch,
+    buf: &mut [u32],
+    w: i32,
+    h: i32,
+    state: &OverlayRenderState<'_>,
+) {
     let hi = state.style.highlight_color;
     let hi_a = (state.style.highlight_opacity.clamp(0.05, 0.95) * 255.0).round() as u8;
     let bd = state.style.border_color;
@@ -1032,6 +1151,7 @@ fn paint_dynamic_layer(buf: &mut [u32], w: i32, h: i32, state: &OverlayRenderSta
                     let py = ry + (rh - pill_h) / 2;
                     fill_rounded_rect(buf, w, h, px, py, pill_w, pill_h, 8, 15, 23, 42, 210);
                     draw_aa_text_on_bgra(
+                        scratch,
                         buf,
                         w,
                         h,
@@ -1075,6 +1195,7 @@ fn paint_dynamic_layer(buf: &mut [u32], w: i32, h: i32, state: &OverlayRenderSta
                 let badge_w = 48.min(rw);
                 let badge_h = 36.min(rh);
                 draw_aa_text_on_bgra(
+                    scratch,
                     buf,
                     w,
                     h,
@@ -1134,6 +1255,7 @@ fn paint_dynamic_layer(buf: &mut [u32], w: i32, h: i32, state: &OverlayRenderSta
             170,
         );
         draw_aa_text_on_bgra(
+            scratch,
             buf,
             w,
             h,

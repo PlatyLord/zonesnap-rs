@@ -15,10 +15,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     ClipCursor, GetAncestor, GetClassNameW, GetWindowLongW, GetWindowRect,
-    GetWindowThreadProcessId, IsWindow, IsWindowVisible, IsZoomed, PostMessageW,
+    GetWindowThreadProcessId, IsHungAppWindow, IsWindow, IsWindowVisible, IsZoomed, PostMessageW,
     SendMessageTimeoutW, SetWindowPos, ShowWindow, WindowFromPoint, GA_ROOT, GWL_STYLE, HTCAPTION,
-    SMTO_ABORTIFHUNG, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_MAXIMIZE, SW_RESTORE,
-    WM_CANCELMODE, WM_NCHITTEST, WS_CHILD, WS_MAXIMIZEBOX, WS_THICKFRAME,
+    MINMAXINFO, SMTO_ABORTIFHUNG, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_MAXIMIZE,
+    SW_RESTORE, WM_CANCELMODE, WM_GETMINMAXINFO, WM_NCHITTEST, WS_CHILD, WS_MAXIMIZEBOX,
+    WS_THICKFRAME,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -402,10 +403,46 @@ pub fn is_titlebar_hit(hwnd: HWND, x: i32, y: i32) -> bool {
     ret != LRESULT(0) && result == HTCAPTION as usize
 }
 
-/// Move a window without changing its size, z-order, or activation state.
-/// Fails silently if the target window is elevated or rejects positioning.
-pub fn move_window_nosize(hwnd: HWND, x: i32, y: i32) {
+/// Clamp a queried `MINMAXINFO.ptMinTrackSize` to sane bounds, falling back to `(160, 100)`.
+pub fn clamp_min_track_size(x: i32, y: i32) -> (i32, i32) {
+    let w = if x > 0 { x.clamp(120, 1200) } else { 160 };
+    let h = if y > 0 { y.clamp(80, 900) } else { 100 };
+    (w, h)
+}
+
+/// Query a window's minimum tracking size (`WM_GETMINMAXINFO`) with a 30ms non-blocking timeout.
+pub fn query_min_track_size(hwnd: HWND) -> (i32, i32) {
     if hwnd.0.is_null() {
+        return (160, 100);
+    }
+    let mut mmi = MINMAXINFO::default();
+    let ret = unsafe {
+        SendMessageTimeoutW(
+            hwnd,
+            WM_GETMINMAXINFO,
+            WPARAM(0),
+            LPARAM(&mut mmi as *mut MINMAXINFO as isize),
+            SMTO_ABORTIFHUNG,
+            30,
+            None,
+        )
+    };
+    if ret == LRESULT(0) {
+        (160, 100)
+    } else {
+        clamp_min_track_size(mmi.ptMinTrackSize.x, mmi.ptMinTrackSize.y)
+    }
+}
+
+/// Returns true if `hwnd` is currently marked hung/not responding by Windows.
+pub fn is_hung_window(hwnd: HWND) -> bool {
+    !hwnd.0.is_null() && unsafe { IsHungAppWindow(hwnd).as_bool() }
+}
+
+/// Move a window without changing its size, z-order, or activation state.
+/// Fails silently if the target window is hung, elevated, or rejects positioning.
+pub fn move_window_nosize(hwnd: HWND, x: i32, y: i32) {
+    if is_hung_window(hwnd) || hwnd.0.is_null() {
         return;
     }
     unsafe {
@@ -421,9 +458,10 @@ pub fn move_window_nosize(hwnd: HWND, x: i32, y: i32) {
     }
 }
 
-/// Resize and position a window without changing its z-order or activation state.
+/// Resize and position a window synchronously without changing its z-order or activation state.
+/// Skips hung windows to keep the daemon thread responsive while providing natural back-pressure.
 pub fn resize_window(hwnd: HWND, rect: Rect) {
-    if hwnd.0.is_null() {
+    if is_hung_window(hwnd) || hwnd.0.is_null() {
         return;
     }
     unsafe {
@@ -785,5 +823,14 @@ mod tests {
                 bottom: 425
             }
         );
+    }
+
+    #[test]
+    fn clamp_min_track_size_falls_back_and_clamps_bounds() {
+        assert_eq!(clamp_min_track_size(0, 0), (160, 100));
+        assert_eq!(clamp_min_track_size(-10, -5), (160, 100));
+        assert_eq!(clamp_min_track_size(40, 20), (120, 80));
+        assert_eq!(clamp_min_track_size(420, 310), (420, 310));
+        assert_eq!(clamp_min_track_size(2500, 1800), (1200, 900));
     }
 }

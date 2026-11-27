@@ -10,7 +10,7 @@ mod overlay;
 mod tray;
 mod window_ops;
 
-use crate::config::{config_modified_time, Config, LayoutMode};
+use crate::config::{config_modified_time, config_path, Config, LayoutMode};
 use crate::hook::{HookEvent, HookMode, HookSharedState, HookThread, WM_ZONESNAP_EVENT};
 use crate::hotkeys::{
     is_mouse_vk, modifier_to_vk, optional_modifier_to_vk, HotkeyManager, HOTKEY_ACTIVATE_OVERLAY,
@@ -29,15 +29,16 @@ use crate::window_ops::{
     detect_resize_edges, get_root_window_at, get_window_rect, hwnd_to_isize, is_excluded_app,
     is_manageable_window, is_maximizable_window, is_resizable_window, is_titlebar_hit,
     is_valid_window, isize_to_hwnd, maximize_window_on_monitor, move_window_nosize,
-    replay_mouse_button_click, resize_window, restore_if_maximized, restore_unsnapped_window,
-    send_menu_mask_key, snap_window_flush, unclip_cursor, ResizeEdges,
+    query_min_track_size, replay_mouse_button_click, resize_window, restore_if_maximized,
+    restore_unsnapped_window, send_menu_mask_key, snap_window_flush, unclip_cursor, ResizeEdges,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT,
@@ -61,7 +62,20 @@ const TIMER_TOAST_HIDE: usize = 1;
 const TIMER_POST_SNAP_REVERIFY: usize = 2;
 const TIMER_CONFIG_WATCH: usize = 3;
 const TIMER_OVERLAY_IDLE_EVICT: usize = 4;
+const TIMER_RESIZE_FLUSH: usize = 5;
 const OVERLAY_IDLE_EVICT_MS: u32 = 10_000;
+const RESIZE_MIN_INTERVAL: Duration = Duration::from_millis(8);
+
+fn find_monitor_at(monitors: &mut Vec<MonitorInfo>, x: i32, y: i32) -> Option<MonitorInfo> {
+    if let Some(m) = monitors.iter().find(|m| m.rc_monitor.contains(x, y)) {
+        return Some(m.clone());
+    }
+    let found = monitor_from_point(x, y);
+    if found.is_some() {
+        *monitors = enumerate_monitors();
+    }
+    found
+}
 
 fn hide_overlay_and_schedule(overlay: &mut OverlayWindow, daemon_hwnd: HWND) {
     overlay.hide();
@@ -117,6 +131,8 @@ enum DragSession {
         hwnd: isize,
         grab_offset_x: i32,
         grab_offset_y: i32,
+        can_maximize: bool,
+        last_pos: Option<(i32, i32)>,
         maximize_target: Option<MonitorInfo>,
     },
     AltResize {
@@ -125,6 +141,12 @@ enum DragSession {
         start_y: i32,
         orig_rect: Rect,
         edges: ResizeEdges,
+        min_w: i32,
+        min_h: i32,
+        last_applied_rect: Rect,
+        pending_rect: Option<Rect>,
+        last_resize_at: Instant,
+        flush_timer_armed: bool,
     },
 }
 
@@ -148,7 +170,9 @@ struct DaemonState {
     rx: Receiver<HookEvent>,
     overlay: OverlayWindow,
     config: Config,
+    cached_config_path: Option<PathBuf>,
     last_config_mtime: Option<SystemTime>,
+    monitors: Vec<MonitorInfo>,
     reload_msg: u32,
     tray: Option<TrayIcon>,
     taskbar_created_msg: u32,
@@ -170,6 +194,7 @@ impl DaemonState {
         overlay: OverlayWindow,
         config: Config,
         last_config_mtime: Option<SystemTime>,
+        monitors: Vec<MonitorInfo>,
         reload_msg: u32,
         tray: Option<TrayIcon>,
         taskbar_created_msg: u32,
@@ -181,7 +206,9 @@ impl DaemonState {
             rx,
             overlay,
             config,
+            cached_config_path: config_path().ok(),
             last_config_mtime,
+            monitors,
             reload_msg,
             tray,
             taskbar_created_msg,
@@ -204,6 +231,7 @@ impl DaemonState {
     fn prepare_tray_menu(&mut self) -> Vec<TrayMonitorLayouts> {
         self.check_and_reload_if_changed();
         let monitors = enumerate_monitors();
+        self.monitors = monitors.clone();
         self.config.ensure_monitors(&monitors);
 
         self.tray_layout_map.clear();
@@ -261,7 +289,11 @@ impl DaemonState {
     }
 
     fn check_and_reload_if_changed(&mut self) {
-        let mtime = config_modified_time();
+        let mtime = self
+            .cached_config_path
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).ok()?.modified().ok())
+            .or_else(config_modified_time);
         if mtime.is_some() && mtime != self.last_config_mtime {
             self.reload_config();
         }
@@ -291,6 +323,7 @@ impl DaemonState {
 
     fn handle_display_change(&mut self) {
         let monitors = enumerate_monitors();
+        self.monitors = monitors.clone();
         self.config.ensure_monitors(&monitors);
         if self.overlay_session.is_none() && !self.overlay.is_visible() {
             cancel_overlay_idle_evict(self.daemon_hwnd);
@@ -303,7 +336,7 @@ impl DaemonState {
             return;
         }
         if locked {
-            if let Some(mon) = monitor_from_point(cursor_x, cursor_y) {
+            if let Some(mon) = find_monitor_at(&mut self.monitors, cursor_x, cursor_y) {
                 clip_cursor_to_monitor(&mon);
                 self.cursor_locked = true;
             }
@@ -314,6 +347,9 @@ impl DaemonState {
     }
 
     fn end_drag(&mut self) {
+        unsafe {
+            let _ = KillTimer(self.daemon_hwnd, TIMER_RESIZE_FLUSH);
+        }
         if self.cursor_locked {
             unclip_cursor();
             self.cursor_locked = false;
@@ -322,6 +358,27 @@ impl DaemonState {
         self.overlay_session = None;
         self.drag = DragSession::None;
         self.shared.set_mode(HookMode::Idle);
+    }
+
+    fn flush_pending_resize(&mut self) {
+        if let DragSession::AltResize {
+            hwnd,
+            ref mut pending_rect,
+            ref mut last_applied_rect,
+            ref mut last_resize_at,
+            ref mut flush_timer_armed,
+            ..
+        } = self.drag
+        {
+            *flush_timer_armed = false;
+            if let Some(final_rect) = pending_rect.take() {
+                if final_rect != *last_applied_rect {
+                    resize_window(isize_to_hwnd(hwnd), final_rect);
+                    *last_applied_rect = final_rect;
+                    *last_resize_at = Instant::now();
+                }
+            }
+        }
     }
 
     fn clear_toast(&mut self) {
@@ -344,8 +401,7 @@ impl DaemonState {
     }
 
     fn show_overlay(&mut self, target_hwnd: isize, x: i32, y: i32, from_hotkey: bool) {
-        self.check_and_reload_if_changed();
-        let Some(mon) = monitor_from_point(x, y) else {
+        let Some(mon) = find_monitor_at(&mut self.monitors, x, y) else {
             return;
         };
         let shift_held = unsafe { ((GetAsyncKeyState(VK_SHIFT.0 as i32) as u16) & 0x8000) != 0 };
@@ -404,7 +460,7 @@ impl DaemonState {
 
     fn update_overlay_cursor(&mut self, sess: &mut OverlaySession, x: i32, y: i32) {
         if !sess.monitor.rc_monitor.contains(x, y) {
-            if let Some(new_mon) = monitor_from_point(x, y) {
+            if let Some(new_mon) = find_monitor_at(&mut self.monitors, x, y) {
                 if new_mon.profile_key() != sess.monitor.profile_key()
                     || new_mon.rc_work != sess.monitor.rc_work
                 {
@@ -530,12 +586,15 @@ impl DaemonState {
                     hwnd,
                     grab_offset_x,
                     grab_offset_y,
+                    can_maximize,
                     ..
                 } => {
                     self.drag = DragSession::AltMove {
                         hwnd,
                         grab_offset_x,
                         grab_offset_y,
+                        can_maximize,
+                        last_pos: None,
                         maximize_target: None,
                     };
                     self.shared.set_mode(HookMode::AltMoving);
@@ -691,6 +750,16 @@ impl DaemonState {
                     self.end_drag();
                     return;
                 };
+                let excluded = self
+                    .shared
+                    .excluded_apps
+                    .read()
+                    .map(|g| is_excluded_app(hwnd, &g))
+                    .unwrap_or(false);
+                if excluded {
+                    self.end_drag();
+                    return;
+                }
                 let overlay_hwnd = self.shared.overlay_hwnd.load(Ordering::Acquire);
                 if !is_manageable_window(hwnd, overlay_hwnd) {
                     self.end_drag();
@@ -728,7 +797,7 @@ impl DaemonState {
                     return;
                 };
                 if was_max {
-                    let mon_top = monitor_from_point(x, y)
+                    let mon_top = find_monitor_at(&mut self.monitors, x, y)
                         .map(|m| m.rc_work.top)
                         .unwrap_or(0);
                     move_window_nosize(hwnd, x - rect.width() / 2, (y - 16).max(mon_top));
@@ -746,6 +815,8 @@ impl DaemonState {
                     hwnd: hwnd_to_isize(hwnd),
                     grab_offset_x: x - rect.left,
                     grab_offset_y: y - rect.top,
+                    can_maximize: is_maximizable_window(hwnd),
+                    last_pos: None,
                     maximize_target: None,
                 };
                 let lock_vk = self.shared.lock_mod_vk.load(Ordering::Acquire);
@@ -771,6 +842,7 @@ impl DaemonState {
                     return;
                 };
                 self.snapped_cache.remove(&hwnd_to_isize(hwnd));
+                let (min_w, min_h) = query_min_track_size(hwnd);
                 let edges = if corner_mode {
                     detect_nearest_corner(orig_rect, x, y)
                 } else {
@@ -782,6 +854,12 @@ impl DaemonState {
                     start_y: y,
                     orig_rect,
                     edges,
+                    min_w,
+                    min_h,
+                    last_applied_rect: orig_rect,
+                    pending_rect: None,
+                    last_resize_at: Instant::now() - RESIZE_MIN_INTERVAL,
+                    flush_timer_armed: false,
                 };
             }
             HookEvent::TriggerOverlayFromDrag { x, y } => {
@@ -885,6 +963,20 @@ impl DaemonState {
                 }
             }
             HookEvent::RightUp { .. } => {
+                if let DragSession::AltResize {
+                    hwnd,
+                    pending_rect: Some(final_rect),
+                    last_applied_rect,
+                    ..
+                } = self.drag
+                {
+                    unsafe {
+                        let _ = KillTimer(self.daemon_hwnd, TIMER_RESIZE_FLUSH);
+                    }
+                    if final_rect != last_applied_rect {
+                        resize_window(isize_to_hwnd(hwnd), final_rect);
+                    }
+                }
                 if matches!(self.drag, DragSession::AltResize { .. }) {
                     self.end_drag();
                 }
@@ -946,12 +1038,19 @@ impl DaemonState {
                 hwnd,
                 grab_offset_x,
                 grab_offset_y,
+                can_maximize,
+                ref mut last_pos,
                 ref mut maximize_target,
             } => {
                 let target = isize_to_hwnd(hwnd);
-                move_window_nosize(target, x - grab_offset_x, y - grab_offset_y);
-                if self.config.behavior.drag_top_maximize && is_maximizable_window(target) {
-                    if let Some(mon) = monitor_from_point(x, y) {
+                let nx = x - grab_offset_x;
+                let ny = y - grab_offset_y;
+                if *last_pos != Some((nx, ny)) {
+                    *last_pos = Some((nx, ny));
+                    move_window_nosize(target, nx, ny);
+                }
+                if self.config.behavior.drag_top_maximize && can_maximize {
+                    if let Some(mon) = find_monitor_at(&mut self.monitors, x, y) {
                         if y <= mon.rc_work.top + 10 {
                             *maximize_target = Some(mon.clone());
                             cancel_overlay_idle_evict(self.daemon_hwnd);
@@ -979,10 +1078,42 @@ impl DaemonState {
                 start_y,
                 orig_rect,
                 edges,
+                min_w,
+                min_h,
+                ref mut last_applied_rect,
+                ref mut pending_rect,
+                ref mut last_resize_at,
+                ref mut flush_timer_armed,
             } => {
                 let new_rect =
-                    compute_resized_rect(orig_rect, edges, x - start_x, y - start_y, 160, 100);
-                resize_window(isize_to_hwnd(hwnd), new_rect);
+                    compute_resized_rect(orig_rect, edges, x - start_x, y - start_y, min_w, min_h);
+                if new_rect != *last_applied_rect {
+                    if last_resize_at.elapsed() >= RESIZE_MIN_INTERVAL {
+                        if *flush_timer_armed {
+                            unsafe {
+                                let _ = KillTimer(self.daemon_hwnd, TIMER_RESIZE_FLUSH);
+                            }
+                            *flush_timer_armed = false;
+                        }
+                        resize_window(isize_to_hwnd(hwnd), new_rect);
+                        *last_applied_rect = new_rect;
+                        *last_resize_at = Instant::now();
+                        *pending_rect = None;
+                    } else {
+                        *pending_rect = Some(new_rect);
+                        if !*flush_timer_armed {
+                            unsafe {
+                                let _ = SetTimer(
+                                    self.daemon_hwnd,
+                                    TIMER_RESIZE_FLUSH,
+                                    RESIZE_MIN_INTERVAL.as_millis() as u32,
+                                    None,
+                                );
+                            }
+                            *flush_timer_armed = true;
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -1134,6 +1265,8 @@ unsafe extern "system" fn daemon_wnd_proc(
                             state.clear_toast();
                         } else if timer_id == TIMER_POST_SNAP_REVERIFY {
                             state.reverify_pending_snap();
+                        } else if timer_id == TIMER_RESIZE_FLUSH {
+                            state.flush_pending_resize();
                         } else if timer_id == TIMER_OVERLAY_IDLE_EVICT {
                             if state.overlay_session.is_none() && !state.overlay.is_visible() {
                                 state.overlay.release_idle_buffers();
@@ -1258,6 +1391,7 @@ fn main() {
             overlay,
             cfg,
             last_mtime,
+            monitors,
             reload_msg,
             tray,
             taskbar_created_msg,

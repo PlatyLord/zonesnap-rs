@@ -1,3 +1,24 @@
+pub const AVATAR_SIZE: u32 = 96;
+const AVATAR_BIN: &[u8] = include_bytes!("../assets/avatar.bin");
+
+/// Decode the embedded `96x96` circular author avatar into RGBA8888 bytes (`AVATAR_SIZE * AVATAR_SIZE * 4`).
+pub fn author_avatar_rgba() -> Vec<u8> {
+    let pixel_count = (AVATAR_SIZE * AVATAR_SIZE) as usize;
+    let palette_bytes = 256 * 4;
+    let mut out = Vec::with_capacity(pixel_count * 4);
+    if AVATAR_BIN.len() < palette_bytes + pixel_count {
+        out.resize(pixel_count * 4, 0);
+        return out;
+    }
+    let palette = &AVATAR_BIN[..palette_bytes];
+    let indices = &AVATAR_BIN[palette_bytes..palette_bytes + pixel_count];
+    for &idx in indices {
+        let off = (idx as usize) * 4;
+        out.extend_from_slice(&palette[off..off + 4]);
+    }
+    out
+}
+
 /// Generate the ZoneSnap application icon as `[r, g, b, a]` bytes (RGBA8888).
 pub fn app_icon_rgba(size: u32) -> Vec<u8> {
     let bgra = app_icon_bgra_u32(size);
@@ -88,6 +109,18 @@ mod tests {
         assert_eq!(rgba[3], 0);
         // Center pixel is opaque
         let mid = (32 * 64 + 32) * 4;
+        assert_eq!(rgba[mid + 3], 255);
+    }
+
+    #[test]
+    fn author_avatar_dimensions_and_circular_mask_are_valid() {
+        let rgba = author_avatar_rgba();
+        let expected = (AVATAR_SIZE * AVATAR_SIZE * 4) as usize;
+        assert_eq!(rgba.len(), expected);
+        // Corner pixel is transparent
+        assert_eq!(rgba[3], 0);
+        // Center pixel is opaque
+        let mid = ((AVATAR_SIZE / 2) * AVATAR_SIZE + (AVATAR_SIZE / 2)) as usize * 4;
         assert_eq!(rgba[mid + 3], 255);
     }
 }

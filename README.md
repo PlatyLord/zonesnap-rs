@@ -7,7 +7,7 @@
 
   <p>
     <a href="https://github.com/PlatyLord/zonesnap-rs/releases">
-      <img src="https://img.shields.io/badge/release-v1.2.0-38bdf8?style=flat-square" alt="Release v1.2.0" />
+      <img src="https://img.shields.io/badge/release-v1.2.1-38bdf8?style=flat-square" alt="Release v1.2.1" />
     </a>
     <a href="LICENSE">
       <img src="https://img.shields.io/badge/license-GPL--3.0-a6e3a1?style=flat-square" alt="License GPL-3.0" />
@@ -42,7 +42,7 @@
 
 ## Why ZoneSnap?
 
-- **True Single-File Portability:** One standalone `zonesnap.exe` (~3.2 MB) with zero installer, DLLs, registry writes, or `%APPDATA%` clutter—`zones.json` lives right beside the `.exe`.
+- **True Single-File Portability:** One standalone `zonesnap.exe` (~4 MB) with zero installer, DLLs, registry writes, or `%APPDATA%` clutter—`zones.json` lives right beside the `.exe`.
 - **~1–3 MB Idle RAM:** Sits near ~1 MB at startup and automatically evicts full-screen overlay buffers after 10 seconds of idle time.
 - **Two Snapping Modes, Unlimited Layouts:** Switch live between **Dynamic Grid** (drag-to-span cells) and **Custom Zones** (with decoupled **Custom Trigger Areas**, `Shift` merge, and `±16px` border merge).
 - **Keyboard or One-Handed Mouse Move & Resize:** Move from anywhere inside a window (`Alt + Left-Drag`) or resize from the nearest edge/corner (`Alt + Right-Drag`), or remap `Alt` to `Mouse Back` / `Mouse Forward` / `Middle Click` so you never have to touch the keyboard.
@@ -254,7 +254,7 @@ cargo test
 cargo build --release
 ```
 
-The standalone GUI executable is written to `target\release\zonesnap.exe` (statically linking the MSVC CRT via `.cargo/config.toml`). Pushing a version tag (e.g. `v1.2.0`) triggers [`.github/workflows/release.yml`](.github/workflows/release.yml) to run `cargo test`, build `zonesnap.exe`, extract release notes from [CHANGELOG.md](CHANGELOG.md), and publish a GitHub Release automatically.
+The standalone GUI executable is written to `target\release\zonesnap.exe` (statically linking the MSVC CRT via `.cargo/config.toml`). Pushing a version tag (e.g. `v1.2.1`) triggers [`.github/workflows/release.yml`](.github/workflows/release.yml) to run `cargo test`, build `zonesnap.exe`, extract release notes from [CHANGELOG.md](CHANGELOG.md), and publish a GitHub Release automatically.
 
 ---
 

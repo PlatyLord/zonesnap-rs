@@ -6,7 +6,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::thread::{self, JoinHandle};
 use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::System::Threading::{
+    GetCurrentThread, GetCurrentThreadId, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
     VK_MBUTTON, VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_XBUTTON1,
@@ -267,9 +269,9 @@ unsafe extern "system" fn mouse_hook_proc(ncode: i32, wparam: WPARAM, lparam: LP
                 return LRESULT(1);
             }
             if mode == HookMode::Idle {
-                if !is_point_excluded(&ctx.state, x, y) {
-                    let move_vk = ctx.state.move_mod_vk.load(Ordering::Acquire);
-                    if is_move_mod_active(&ctx.state, move_vk) {
+                let move_vk = ctx.state.move_mod_vk.load(Ordering::Acquire);
+                if is_move_mod_active(&ctx.state, move_vk) {
+                    if !is_point_excluded(&ctx.state, x, y) {
                         if is_mouse_vk(move_vk) {
                             ctx.state.mouse_mod_used.store(true, Ordering::Release);
                         }
@@ -279,10 +281,10 @@ unsafe extern "system" fn mouse_hook_proc(ncode: i32, wparam: WPARAM, lparam: LP
                         ctx.state.set_mode(HookMode::AltMoving);
                         send_event(ctx, HookEvent::StartAltMove { x, y });
                         return LRESULT(1);
-                    } else {
-                        ctx.state.set_mode(HookMode::MaybeStandardDrag);
-                        send_event(ctx, HookEvent::LeftDownCandidate { x, y });
                     }
+                } else {
+                    ctx.state.set_mode(HookMode::MaybeStandardDrag);
+                    send_event(ctx, HookEvent::LeftDownCandidate { x, y });
                 }
             }
         }
@@ -316,21 +318,20 @@ unsafe extern "system" fn mouse_hook_proc(ncode: i32, wparam: WPARAM, lparam: LP
                     return LRESULT(1);
                 }
                 HookMode::Idle => {
-                    if !is_point_excluded(&ctx.state, x, y) {
-                        let move_vk = ctx.state.move_mod_vk.load(Ordering::Acquire);
-                        if is_move_mod_active(&ctx.state, move_vk) {
-                            if is_mouse_vk(move_vk) {
-                                ctx.state.mouse_mod_used.store(true, Ordering::Release);
-                            }
-                            let corner_vk = ctx.state.corner_mod_vk.load(Ordering::Acquire);
-                            let corner_mode = corner_vk != 0 && is_vk_down(corner_vk);
-                            ctx.state
-                                .pending_suppress_rbutton_up
-                                .store(true, Ordering::Release);
-                            ctx.state.set_mode(HookMode::AltResizing);
-                            send_event(ctx, HookEvent::StartAltResize { x, y, corner_mode });
-                            return LRESULT(1);
+                    let move_vk = ctx.state.move_mod_vk.load(Ordering::Acquire);
+                    if is_move_mod_active(&ctx.state, move_vk) && !is_point_excluded(&ctx.state, x, y)
+                    {
+                        if is_mouse_vk(move_vk) {
+                            ctx.state.mouse_mod_used.store(true, Ordering::Release);
                         }
+                        let corner_vk = ctx.state.corner_mod_vk.load(Ordering::Acquire);
+                        let corner_mode = corner_vk != 0 && is_vk_down(corner_vk);
+                        ctx.state
+                            .pending_suppress_rbutton_up
+                            .store(true, Ordering::Release);
+                        ctx.state.set_mode(HookMode::AltResizing);
+                        send_event(ctx, HookEvent::StartAltResize { x, y, corner_mode });
+                        return LRESULT(1);
                     }
                 }
                 _ => {}
@@ -473,6 +474,7 @@ impl HookThread {
         let handle = thread::Builder::new()
             .name("zonesnap-hook".to_string())
             .spawn(move || unsafe {
+                let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
                 let tid = GetCurrentThreadId();
                 let _ = tid_tx.send(tid);
 
