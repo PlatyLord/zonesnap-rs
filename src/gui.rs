@@ -115,6 +115,50 @@ fn folder_icon_button(ui: &mut egui::Ui, palette: ThemePalette) -> egui::Respons
     resp.on_hover_text("Open containing folder")
 }
 
+fn primary_button<'a>(text: &str, palette: ThemePalette) -> egui::Button<'a> {
+    egui::Button::new(egui::RichText::new(text).color(palette.accent_text).strong())
+        .fill(palette.accent)
+}
+
+fn danger_button<'a>(text: &str, enabled: bool, palette: ThemePalette) -> egui::Button<'a> {
+    if enabled {
+        let fill = Color32::from_rgba_unmultiplied(
+            palette.error.r(),
+            palette.error.g(),
+            palette.error.b(),
+            28,
+        );
+        egui::Button::new(egui::RichText::new(text).color(palette.error))
+            .fill(fill)
+            .stroke(Stroke::new(1.0_f32, palette.error))
+    } else {
+        egui::Button::new(text)
+    }
+}
+
+fn subtle_button<'a>(text: &str, palette: ThemePalette) -> egui::Button<'a> {
+    egui::Button::new(egui::RichText::new(text).small())
+        .fill(palette.surface_bg)
+        .stroke(Stroke::new(1.0_f32, palette.border))
+}
+
+fn compute_default_settings_size(monitors: &[MonitorInfo], gui_scale: f32) -> [f32; 2] {
+    let scale = gui_scale.clamp(1.0, 1.5);
+    let ideal_w = 1060.0 * scale;
+    let ideal_h = 800.0 * scale;
+
+    if let Some(m) = monitors.iter().find(|m| m.is_primary).or_else(|| monitors.first()) {
+        let dpi_scale = (m.dpi_x.max(96) as f32) / 96.0;
+        let work_w = (m.rc_work.width() as f32) / dpi_scale;
+        let work_h = (m.rc_work.height() as f32) / dpi_scale;
+        let max_w = (work_w * 0.90).max(760.0);
+        let max_h = (work_h * 0.88).max(560.0);
+        [ideal_w.clamp(760.0, max_w), ideal_h.clamp(560.0, max_h)]
+    } else {
+        [ideal_w, ideal_h]
+    }
+}
+
 fn rect_overlap_area(a: EguiRect, b: EguiRect) -> f32 {
     let inter = a.intersect(b);
     if inter.is_positive() {
@@ -718,6 +762,8 @@ impl SettingsApp {
             self.selected_layout_idx = layout_count.saturating_sub(1);
         }
 
+        let palette = theme_palette(self.config.appearance.gui_theme);
+
         // Layout selection & management toolbar (selecting a layout makes it active for this monitor)
         let mut clicked_layout: Option<usize> = None;
         ui.horizontal_wrapped(|ui| {
@@ -739,7 +785,11 @@ impl SettingsApp {
                 }
             }
 
-            if ui.button("+ Add Layout").clicked() {
+            let add_layout_btn = egui::Button::new(
+                egui::RichText::new("+ Add Layout").color(palette.accent).strong(),
+            )
+            .stroke(Stroke::new(1.0_f32, palette.accent));
+            if ui.add(add_layout_btn).clicked() {
                 if let Some(prof) = self.config.monitors.get_mut(&self.selected_monitor_key) {
                     let n = prof.layouts.len() + 1;
                     prof.layouts.push(Layout {
@@ -768,7 +818,6 @@ impl SettingsApp {
             .map(|(k, p)| (k.clone(), format!("{} ({}x{})", p.device_name, p.width, p.height)))
             .collect();
 
-        let palette = theme_palette(self.config.appearance.gui_theme);
         let Some(prof) = self.config.monitors.get_mut(&self.selected_monitor_key) else {
             return;
         };
@@ -792,7 +841,7 @@ impl SettingsApp {
 
         ui.horizontal_wrapped(|ui| {
             ui.label("Name:");
-            ui.add(egui::TextEdit::singleline(&mut prof.layouts[sel_idx].name).desired_width(180.0));
+            ui.add(egui::TextEdit::singleline(&mut prof.layouts[sel_idx].name).desired_width(155.0));
 
             let is_grid = matches!(prof.layouts[sel_idx].mode, LayoutMode::DynamicGrid { .. });
             if ui.radio(is_grid, "Dynamic Grid").clicked() && !is_grid {
@@ -824,7 +873,7 @@ impl SettingsApp {
                     });
             }
             if ui
-                .add_enabled(can_delete, egui::Button::new("Delete Layout"))
+                .add_enabled(can_delete, danger_button("Delete Layout", can_delete, palette))
                 .clicked()
             {
                 delete_layout = true;
@@ -909,7 +958,15 @@ impl SettingsApp {
             w = h * aspect;
         }
         let palette = theme_palette(self.config.appearance.gui_theme);
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
+        let (rect, _) = ui
+            .horizontal(|ui| {
+                let pad = ((avail.x - w) * 0.5).max(0.0);
+                if pad > 1.0 {
+                    ui.add_space(pad);
+                }
+                ui.allocate_exact_size(Vec2::new(w, h), Sense::hover())
+            })
+            .inner;
         let p = ui.painter_at(rect);
         p.rect_filled(rect, 4.0, palette.canvas_bg);
         p.rect_stroke(rect, 4.0, Stroke::new(1.5_f32, palette.border));
@@ -1001,13 +1058,18 @@ impl SettingsApp {
             }
         }
 
+        let palette = theme_palette(self.config.appearance.gui_theme);
+        let has_sel = self.selected_zone_idx.is_some();
+        let can_delete_zone = has_sel && zones.len() > 1;
+
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Add Zone").clicked() {
+            if ui.add(primary_button("+ Add Zone", palette)).clicked() {
                 zones.push(CustomZone::simple([0.1, 0.1, 0.5, 0.5]));
                 self.selected_zone_idx = Some(zones.len() - 1);
                 self.zone_edit_target = ZoneEditTarget::Bounds;
             }
-            let has_sel = self.selected_zone_idx.is_some();
+            ui.separator();
+            ui.label(egui::RichText::new("Selected:").small().weak());
             if ui
                 .add_enabled(has_sel, egui::Button::new("Split V (L|R)"))
                 .clicked()
@@ -1032,8 +1094,12 @@ impl SettingsApp {
                     self.zone_edit_target = ZoneEditTarget::Bounds;
                 }
             }
+            ui.add_space(4.0);
             if ui
-                .add_enabled(has_sel && zones.len() > 1, egui::Button::new("Delete Zone"))
+                .add_enabled(
+                    can_delete_zone,
+                    danger_button("Delete Zone", can_delete_zone, palette),
+                )
                 .clicked()
             {
                 if let Some(idx) = self.selected_zone_idx {
@@ -1047,8 +1113,12 @@ impl SettingsApp {
                 }
             }
             ui.separator();
-            ui.label("Presets:");
-            if ui.button("2 Cols").clicked() {
+            ui.checkbox(&mut self.snap_1pct, "Snap 1%");
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Presets:").small().weak());
+            if ui.add(subtle_button("2 Cols", palette)).clicked() {
                 *zones = vec![
                     CustomZone::simple([0.0, 0.0, 0.5, 1.0]),
                     CustomZone::simple([0.5, 0.0, 1.0, 1.0]),
@@ -1056,7 +1126,7 @@ impl SettingsApp {
                 self.selected_zone_idx = Some(0);
                 self.zone_edit_target = ZoneEditTarget::Bounds;
             }
-            if ui.button("3 Cols").clicked() {
+            if ui.add(subtle_button("3 Cols", palette)).clicked() {
                 *zones = vec![
                     CustomZone::simple([0.0, 0.0, 1.0 / 3.0, 1.0]),
                     CustomZone::simple([1.0 / 3.0, 0.0, 2.0 / 3.0, 1.0]),
@@ -1065,7 +1135,7 @@ impl SettingsApp {
                 self.selected_zone_idx = Some(0);
                 self.zone_edit_target = ZoneEditTarget::Bounds;
             }
-            if ui.button("2x2").clicked() {
+            if ui.add(subtle_button("2x2", palette)).clicked() {
                 *zones = vec![
                     CustomZone::simple([0.0, 0.0, 0.5, 0.5]),
                     CustomZone::simple([0.5, 0.0, 1.0, 0.5]),
@@ -1075,7 +1145,7 @@ impl SettingsApp {
                 self.selected_zone_idx = Some(0);
                 self.zone_edit_target = ZoneEditTarget::Bounds;
             }
-            if ui.button("Focus+Stack").clicked() {
+            if ui.add(subtle_button("Focus+Stack", palette)).clicked() {
                 *zones = vec![
                     CustomZone::simple([0.0, 0.0, 0.65, 1.0]),
                     CustomZone::simple([0.65, 0.0, 1.0, 0.5]),
@@ -1084,7 +1154,10 @@ impl SettingsApp {
                 self.selected_zone_idx = Some(0);
                 self.zone_edit_target = ZoneEditTarget::Bounds;
             }
-            if ui.button("Center Focus + Sides").clicked() {
+            if ui
+                .add(subtle_button("Center Focus + Sides", palette))
+                .clicked()
+            {
                 *zones = vec![
                     CustomZone::simple([0.0, 0.0, 0.5, 1.0]),
                     CustomZone::simple([0.5, 0.0, 1.0, 1.0]),
@@ -1093,18 +1166,23 @@ impl SettingsApp {
                 self.selected_zone_idx = Some(2);
                 self.zone_edit_target = ZoneEditTarget::Trigger;
             }
-            ui.checkbox(&mut self.snap_1pct, "Snap 1%");
         });
 
         ui.label(
-            egui::RichText::new("Tip: Drag empty space to draw a zone, drag a zone to move it, or enable 'Custom Trigger Area' below to decouple the trigger pad from the snapped output.")
+            egui::RichText::new("Tip: Drag empty space to draw a zone, drag a zone to move it, or turn on 'Custom Trigger Area' below to set a smaller drop pad.")
                 .small()
                 .weak(),
         );
 
+        let selected_has_trigger = self
+            .selected_zone_idx
+            .and_then(|i| zones.get(i))
+            .is_some_and(|z| z.has_custom_trigger());
+        let bottom_reserve = if selected_has_trigger { 88.0 } else { 58.0 };
+
         let aspect = (mon_w.max(1) as f32) / (mon_h.max(1) as f32);
         let avail = ui.available_size();
-        let max_h = (avail.y - 96.0).max(190.0);
+        let max_h = (avail.y - bottom_reserve).max(200.0);
         let mut cw = avail.x.min(max_h * aspect);
         let mut ch = cw / aspect;
         if ch > max_h {
@@ -1112,8 +1190,15 @@ impl SettingsApp {
             cw = ch * aspect;
         }
 
-        let (canvas_rect, resp) =
-            ui.allocate_exact_size(Vec2::new(cw, ch), Sense::click_and_drag());
+        let (canvas_rect, resp) = ui
+            .horizontal(|ui| {
+                let pad = ((avail.x - cw) * 0.5).max(0.0);
+                if pad > 1.0 {
+                    ui.add_space(pad);
+                }
+                ui.allocate_exact_size(Vec2::new(cw, ch), Sense::click_and_drag())
+            })
+            .inner;
 
         let to_screen = |norm: [f32; 4]| -> EguiRect {
             let x1 = canvas_rect.left() + norm[0] * canvas_rect.width();
@@ -2652,10 +2737,11 @@ pub fn run_settings_window(reload_msg: u32) {
 
     let monitors = enumerate_monitors();
     let config = Config::load_or_create(&monitors);
+    let default_size = compute_default_settings_size(&monitors, config.appearance.gui_scale);
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([920.0, 660.0])
+            .with_inner_size(default_size)
             .with_min_inner_size([720.0, 520.0])
             .with_icon(std::sync::Arc::new(egui::IconData {
                 rgba: crate::icon::app_icon_rgba(64),
@@ -2737,5 +2823,33 @@ mod tests {
         assert_eq!(contrasting_text_color(Color32::BLACK), Color32::WHITE);
         assert_eq!(contrasting_text_color(Color32::from_rgb(15, 23, 42)), Color32::WHITE);
         assert_eq!(contrasting_text_color(Color32::from_rgb(203, 75, 22)), Color32::WHITE);
+    }
+
+    #[test]
+    fn default_settings_size_scales_and_clamps_to_monitor() {
+        use crate::monitor::Rect;
+        let qhd = MonitorInfo {
+            hmonitor: 1,
+            device_name: "DISPLAY1".to_string(),
+            rc_monitor: Rect { left: 0, top: 0, right: 2560, bottom: 1440 },
+            rc_work: Rect { left: 0, top: 0, right: 2560, bottom: 1392 },
+            is_primary: true,
+            dpi_x: 96,
+            dpi_y: 96,
+        };
+        assert_eq!(compute_default_settings_size(&[qhd], 1.0), [1060.0, 800.0]);
+
+        let laptop = MonitorInfo {
+            hmonitor: 2,
+            device_name: "DISPLAY2".to_string(),
+            rc_monitor: Rect { left: 0, top: 0, right: 1920, bottom: 1080 },
+            rc_work: Rect { left: 0, top: 0, right: 1920, bottom: 1032 },
+            is_primary: true,
+            dpi_x: 144, // 150% DPI -> logical work area 1280x688
+            dpi_y: 144,
+        };
+        let [w, h] = compute_default_settings_size(&[laptop], 1.2);
+        assert!(w <= 1280.0 * 0.90 + 1.0 && w >= 760.0);
+        assert!(h <= 688.0 * 0.88 + 1.0 && h >= 560.0);
     }
 }
