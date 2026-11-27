@@ -1174,15 +1174,11 @@ impl SettingsApp {
                 .weak(),
         );
 
-        let selected_has_trigger = self
-            .selected_zone_idx
-            .and_then(|i| zones.get(i))
-            .is_some_and(|z| z.has_custom_trigger());
-        let bottom_reserve = if selected_has_trigger { 88.0 } else { 58.0 };
+        const BOTTOM_RESERVE: f32 = 72.0;
 
         let aspect = (mon_w.max(1) as f32) / (mon_h.max(1) as f32);
         let avail = ui.available_size();
-        let max_h = (avail.y - bottom_reserve).max(200.0);
+        let max_h = (avail.y - BOTTOM_RESERVE).max(200.0);
         let mut cw = avail.x.min(max_h * aspect);
         let mut ch = cw / aspect;
         if ch > max_h {
