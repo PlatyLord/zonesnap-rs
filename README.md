@@ -7,7 +7,7 @@
 
   <p>
     <a href="https://github.com/PlatyLord/zonesnap-rs/releases">
-      <img src="https://img.shields.io/badge/release-v1.3.0-38bdf8?style=flat-square" alt="Release v1.3.0" />
+      <img src="https://img.shields.io/badge/release-v1.4.0-38bdf8?style=flat-square" alt="Release v1.4.0" />
     </a>
     <a href="LICENSE">
       <img src="https://img.shields.io/badge/license-GPL--3.0-a6e3a1?style=flat-square" alt="License GPL-3.0" />
@@ -44,13 +44,13 @@
 
 Windows already has basic window snapping, and tools like PowerToys FancyZones add custom layouts, so why use this instead?
 
-- **Just one file, no install:** Download `zonesnap.exe` (~4 MB) and run it from any folder or even a USB stick. Your settings live in a single `zones.json` file right next to it, so it won't scatter files across your PC or leave junk behind if you delete it.
+- **Just one file, no install:** Download `zonesnap.exe` (~4 MB) and run it from any folder or even a USB stick. Your settings live in a single `zones.json` file right next to it, and starting with Windows is off by default so it won't leave files behind unless you opt in.
 - **Barely uses any RAM:** While sitting in the background, it uses around 1–3 MB of memory (compared to hundreds of MB for bigger suites like PowerToys), so you won't feel it running.
 - **Two ways to snap windows:** Use **Dynamic Grid** to drag across a grid and size a window on the spot, or **Custom Zones** to build your own reusable layouts. You can also merge zones by holding `Shift` (or hovering over a shared border), or put smaller drop targets inside bigger zones when layouts overlap.
 - **Move and resize from anywhere:** Hold `Alt` and left-drag anywhere inside a window to move it, or right-drag to resize from the nearest edge or corner. Don't want to touch the keyboard? Swap `Alt` for a spare mouse button (`Back`, `Forward`, or `Middle Click`) and do it all one-handed.
 - **Lines up cleanly across multiple screens:** Windows sit flush edge-to-edge without the weird invisible border gaps Windows 10 and 11 usually leave behind, even if your monitors have different sizes or zoom levels. Hold `Ctrl` while dragging to stop your mouse slipping onto another screen, and pull a snapped window away to restore its old size.
 - **Easier-to-grab window edges (optional):** If you're sick of trying to click the thin edges of Windows 11 windows, you can turn on wider invisible resize borders around your active window, with optional circular grab handles. It's turned off by default so it doesn't use extra resources unless you want it.
-- **Built-in visual editor:** Switch layouts for each monitor from the system tray, or open the settings window to draw zones visually, change shortcuts, adjust text size, and pick from 10 light and dark themes.
+- **Built-in visual editor:** Switch layouts for each monitor from the system tray, or open the settings window to draw color-coded zones with live corner coordinates, change shortcuts, adjust text size, toggle Windows startup, and pick from 10 light and dark themes.
 
 ---
 
@@ -78,7 +78,7 @@ Windows already has basic window snapping, and tools like PowerToys FancyZones a
     <td width="50%" align="center">
       <img src="docs/zonesnap-editor-multipanel.png" alt="Custom Zones and Custom Trigger Area Editor" width="100%" /><br />
       <strong>Custom Zones &amp; Trigger Area Editor</strong><br />
-      <sub>Draw zones and optional smaller drop pads visually.</sub>
+      <sub>Draw color-coded zones with live corner coordinates and optional smaller drop pads.</sub>
     </td>
     <td width="50%" align="center">
       <img src="docs/zonesnap-editor-grid.png" alt="Dynamic Grid Editor" width="100%" /><br />
@@ -95,7 +95,7 @@ Windows already has basic window snapping, and tools like PowerToys FancyZones a
     <td width="50%" align="center">
       <img src="docs/zonessnap-behaviour.png" alt="Appearance, Themes, Scaling and Behavior" width="100%" /><br />
       <strong>Themes, Scaling &amp; Behavior</strong><br />
-      <sub>Pick from 10 light and dark themes, tweak overlay colors, and scale text size.</sub>
+      <sub>Pick from 10 themes, set up Start with Windows, tweak overlay colors, and scale text size.</sub>
     </td>
   </tr>
 </table>
@@ -140,7 +140,7 @@ Windows already has basic window snapping, and tools like PowerToys FancyZones a
 - **Custom Trigger Areas & zone merging:** In Custom Zones mode, you can give a zone a smaller **Trigger** drop pad separate from its full snap area—great for putting a small Center Focus drop pad on top of side columns. Hover within `16px` of a shared border to auto-merge neighbouring zones, or hold `Shift` across multiple zones.
 - **Dynamic Grid & scroll cycling:** Dynamic Grid (`2×2` up to `24×16`, default `12×6`) starts at the cell where you opened the overlay and stretches to wherever you move your mouse. Scroll the mouse wheel while the overlay is up to cycle through layouts on that monitor.
 - **Start with Windows (Opt-In):** Under **Appearance & Behavior**, choose **Off** (default), **Standard (Startup Folder)** (`shell:startup`), or **Administrator (Task Scheduler)** (starts elevated at login with no UAC popup so you can snap Admin windows too). If you later move `zonesnap.exe`, Settings warns you and offers a one-click **Update to Current Location** button.
-- **Visual editor & themes:** Manage layouts per monitor (Add, Duplicate, Copy to Monitor, Presets, Split V/H, Custom Trigger toggle), pick from **10 themes** (`Dark`, `Light`, `Catppuccin Mocha/Macchiato/Frappé/Latte`, `Nord`, `Tokyo Night`, `Gruvbox Dark`, `Solarized Light`), click **Match Overlay Colors** to sync your overlay with your theme, and scale the editor's text from `85%` to `175%`.
+- **Visual editor & themes:** Manage layouts per monitor (Add, Duplicate, Copy to Monitor, Presets, Split V/H, Custom Trigger toggle), pick from **10 themes** (`Dark`, `Light`, `Catppuccin Mocha/Macchiato/Frappé/Latte`, `Nord`, `Tokyo Night`, `Gruvbox Dark`, `Solarized Light`), click **Match Overlay Colors** to sync your overlay with your theme, scale the editor's text from `85%` to `175%`, and click the folder icon next to `Config:` to open the folder containing `zones.json`.
 
 </details>
 
@@ -291,7 +291,7 @@ cargo test
 cargo build --release
 ```
 
-The standalone GUI executable is written to `target\release\zonesnap.exe` (statically linking the MSVC CRT via `.cargo/config.toml`). Pushing a version tag (e.g. `v1.3.0`) triggers [`.github/workflows/release.yml`](.github/workflows/release.yml) to run `cargo test`, build `zonesnap.exe`, extract release notes from [CHANGELOG.md](CHANGELOG.md), and publish a GitHub Release automatically.
+The standalone GUI executable is written to `target\release\zonesnap.exe` (statically linking the MSVC CRT via `.cargo/config.toml`). Pushing a version tag (e.g. `v1.4.0`) triggers [`.github/workflows/release.yml`](.github/workflows/release.yml) to run `cargo test`, build `zonesnap.exe`, extract release notes from [CHANGELOG.md](CHANGELOG.md), and publish a GitHub Release automatically.
 
 </details>
 

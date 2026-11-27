@@ -2,6 +2,25 @@
 
 All notable changes to ZoneSnap are documented in this file.
 
+## [v1.4.0] - 2026-11-28
+
+**Goal:** Add opt-in Windows startup support (Standard or Administrator), make the Visual Zone Editor clearer and easier to use on launch, and rewrite the README in plain English.
+
+### Added
+- **3-Way Start with Windows (Opt-In):** Added an **Off / Standard (Startup Folder) / Administrator (Task Scheduler)** toggle under **Appearance & Behavior**. Standard mode creates `ZoneSnap.lnk` in `shell:startup` with zero Registry writes and includes an **Open Startup Folder** button; Administrator mode registers a `HighestAvailable` logon task (with 72-hour and laptop battery limits disabled) so ZoneSnap can also snap Admin windows with no UAC popup at login. State is read live from Windows (not stored in `zones.json`) and shows a warning with a one-click **Update to Current Location** button if you move `zonesnap.exe`.
+- **Quick Config Folder Button:** Added a vector folder icon button right beside the `Config:` line in the Settings footer to open Windows Explorer directly to `zones.json`.
+- **Distinct Zone Colors, Highlighted Dimensions & Corner Coordinates:** Overlapping unselected zones now use distinct theme-matched colors, the selected zone's dimensions pill is highlighted on top, unselected trigger pads are muted in the background, and live `(X1, Y1)` / `(X2, Y2)` coordinate tags appear at the corners of whichever shape you're editing.
+
+### Changed
+- **Larger Default Settings Window & Clearer Button Hierarchy:** Enlarged the default Settings window to `1060 × 800` (clamped safely to smaller screens), centered the Zone Editor and Dynamic Grid canvases, moved Presets onto their own row, and gave **`+ Add Zone`**, **`+ Add Layout`**, and **Delete** buttons distinct visual hierarchy.
+- **Plain-English README & Updated Screenshots:** Simplified [README.md](README.md) into everyday language, moved technical/configuration details into collapsible sections, and refreshed the `docs/` screenshots.
+
+### Fixed
+- **Close Settings When Exiting From Tray:** Clicking **Exit** in the system tray now automatically closes any open Settings & Zone Editor window instead of leaving it running.
+- **Stable Zone Editor Canvas Size:** Clicking a Custom Trigger Area pad no longer shifts the canvas height under your cursor.
+
+---
+
 ## [v1.3.0] - 2026-11-27
 
 **Goal:** Eliminate pixel-hunting on thin Windows 11 DWM borders by adding opt-in outward-expanded resize hit-boxes and optional floating circular grab handles around the active foreground window—with zero idle CPU or memory overhead when disabled.
